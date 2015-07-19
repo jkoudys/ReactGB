@@ -494,6 +494,14 @@ const Z80 = {
       Z80._r.m = 3;
     },
 
+    // LD SP, HL
+    // 0xF9
+    LDSPHL: function() {
+//      Z80._r.pc;
+      Z80._r.sp = (Z80._r.h << 8)  + Z80._r.l;
+/*      Z80._r.m = 3; */
+    },
+
     SWAPr_b: function() {
       var tr = Z80._r.b;
       Z80._r.b = ((tr & 0xF) << 4) | ((tr & 0xF0) >> 4);
@@ -1253,10 +1261,16 @@ const Z80 = {
       Z80._r.m = 3;
     },
 
+    // DEC b
+    // 0x05
     DECr_b: function() {
       Z80._r.b--;
-      Z80._r.b &= 255;
-      Z80._r.f = Z80._r.b ? 0 : 0x80;
+      Z80._r.b &= 0xFF;
+      // Set the zero flag if 0, half-carry if decremented to 0b00001111, and
+      // the subtract flag to true
+      Z80._r.f = (Z80._r.b ? 0 : 0x80) |
+        (((Z80._r.b & 0xF) === 0xF) ? 0x20 : 0) |
+        0x40;
       Z80._r.m = 1;
     },
     DECr_c: function() {
@@ -2910,8 +2924,12 @@ const Z80 = {
       Z80._r.sp++;
       Z80._r.m = 3;
     },
+
+    // POP AF
+    // 0xF1
     POPAF: function() {
-      Z80._r.f = MMU.rb(Z80._r.sp);
+      // Flags register keeps bottom 4 bits clear
+      Z80._r.f = MMU.rb(Z80._r.sp) & 0xF0;
       Z80._r.sp++;
       Z80._r.a = MMU.rb(Z80._r.sp);
       Z80._r.sp++;
@@ -3245,12 +3263,20 @@ const Z80 = {
       else console.log(i);
     },
 
-    XX: function() {
+    XX: function(instruction) {
       /*Undefined map entry*/
       var opc = Z80._r.pc - 1;
-      LOG.out('Z80', 'Unimplemented instruction at $' + opc.toString(16) + ', stopping.');
+      LOG.out('Z80', 'Unimplemented map instruction ' + instruction + ' at $' + opc.toString(16) + ', stopping.');
+      Z80._stop = 1;
+    },
+
+    XY: function() {
+      /*Undefined cbmap entry*/
+      var opc = Z80._r.pc - 1;
+      LOG.out('Z80', 'Unimplemented cbmap instruction at $' + opc.toString(16) + ', stopping.');
       Z80._stop = 1;
     }
+
   },
   _cbmap: []
 };
@@ -3322,20 +3348,20 @@ Z80._map = [
   Z80._ops.RETZ, Z80._ops.RET, Z80._ops.JPZnn, Z80._ops.MAPcb,
   Z80._ops.CALLZnn, Z80._ops.CALLnn, Z80._ops.ADCn, Z80._ops.RST08,
   // D0
-  Z80._ops.RETNC, Z80._ops.POPDE, Z80._ops.JPNCnn, Z80._ops.XX,
+  Z80._ops.RETNC, Z80._ops.POPDE, Z80._ops.JPNCnn, Z80._ops.XX.bind(null, 'D3'),
   Z80._ops.CALLNCnn, Z80._ops.PUSHDE, Z80._ops.SUBn, Z80._ops.RST10,
-  Z80._ops.RETC, Z80._ops.RETI, Z80._ops.JPCnn, Z80._ops.XX,
-  Z80._ops.CALLCnn, Z80._ops.XX, Z80._ops.SBCn, Z80._ops.RST18,
+  Z80._ops.RETC, Z80._ops.RETI, Z80._ops.JPCnn, Z80._ops.XX.bind(null, 'DB'),
+  Z80._ops.CALLCnn, Z80._ops.XX.bind(null, 'DD'), Z80._ops.SBCn, Z80._ops.RST18,
   // E0
-  Z80._ops.LDIOnA, Z80._ops.POPHL, Z80._ops.LDIOCA, Z80._ops.XX,
-  Z80._ops.XX, Z80._ops.PUSHHL, Z80._ops.ANDn, Z80._ops.RST20,
-  Z80._ops.ADDSPn, Z80._ops.JPHL, Z80._ops.LDmmA, Z80._ops.XX,
-  Z80._ops.XX, Z80._ops.XX, Z80._ops.XORn, Z80._ops.RST28,
+  Z80._ops.LDIOnA, Z80._ops.POPHL, Z80._ops.LDIOCA, Z80._ops.XX.bind(null, 'E3'),
+  Z80._ops.XX.bind(null, 'E4'), Z80._ops.PUSHHL, Z80._ops.ANDn, Z80._ops.RST20,
+  Z80._ops.ADDSPn, Z80._ops.JPHL, Z80._ops.LDmmA, Z80._ops.XX.bind(null, 'EB'),
+  Z80._ops.XX.bind(null, 'EC'), Z80._ops.XX.bind(null, 'ED'), Z80._ops.XORn, Z80._ops.RST28,
   // F0
   Z80._ops.LDAIOn, Z80._ops.POPAF, Z80._ops.LDAIOC, Z80._ops.DI,
-  Z80._ops.XX, Z80._ops.PUSHAF, Z80._ops.ORn, Z80._ops.RST30,
-  Z80._ops.LDHLSPn, Z80._ops.XX, Z80._ops.LDAmm, Z80._ops.EI,
-  Z80._ops.XX, Z80._ops.XX, Z80._ops.CPn, Z80._ops.RST38
+  Z80._ops.XX.bind(null, 'F4'), Z80._ops.PUSHAF, Z80._ops.ORn, Z80._ops.RST30,
+  Z80._ops.LDHLSPn, Z80._ops.LDSPHL, Z80._ops.LDAmm, Z80._ops.EI,
+  Z80._ops.XX.bind(null, 'FC'), Z80._ops.XX.bind(null, 'FD'), Z80._ops.CPn, Z80._ops.RST38
 ];
 
 Z80._cbmap = [
@@ -3351,14 +3377,14 @@ Z80._cbmap = [
   Z80._ops.RRr_h, Z80._ops.RRr_l, Z80._ops.RRHL, Z80._ops.RRr_a,
   // CB20
   Z80._ops.SLAr_b, Z80._ops.SLAr_c, Z80._ops.SLAr_d, Z80._ops.SLAr_e,
-  Z80._ops.SLAr_h, Z80._ops.SLAr_l, Z80._ops.XX, Z80._ops.SLAr_a,
+  Z80._ops.SLAr_h, Z80._ops.SLAr_l, Z80._ops.XY, Z80._ops.SLAr_a,
   Z80._ops.SRAr_b, Z80._ops.SRAr_c, Z80._ops.SRAr_d, Z80._ops.SRAr_e,
-  Z80._ops.SRAr_h, Z80._ops.SRAr_l, Z80._ops.XX, Z80._ops.SRAr_a,
+  Z80._ops.SRAr_h, Z80._ops.SRAr_l, Z80._ops.XY, Z80._ops.SRAr_a,
   // CB30
   Z80._ops.SWAPr_b, Z80._ops.SWAPr_c, Z80._ops.SWAPr_d, Z80._ops.SWAPr_e,
-  Z80._ops.SWAPr_h, Z80._ops.SWAPr_l, Z80._ops.XX, Z80._ops.SWAPr_a,
+  Z80._ops.SWAPr_h, Z80._ops.SWAPr_l, Z80._ops.XY, Z80._ops.SWAPr_a,
   Z80._ops.SRLr_b, Z80._ops.SRLr_c, Z80._ops.SRLr_d, Z80._ops.SRLr_e,
-  Z80._ops.SRLr_h, Z80._ops.SRLr_l, Z80._ops.XX, Z80._ops.SRLr_a,
+  Z80._ops.SRLr_h, Z80._ops.SRLr_l, Z80._ops.XY, Z80._ops.SRLr_a,
   // CB40
   Z80._ops.BIT0b, Z80._ops.BIT0c, Z80._ops.BIT0d, Z80._ops.BIT0e,
   Z80._ops.BIT0h, Z80._ops.BIT0l, Z80._ops.BIT0m, Z80._ops.BIT0a,

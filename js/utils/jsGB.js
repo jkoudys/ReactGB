@@ -47,7 +47,7 @@ const jsGB = {
           Z80._r.ime = 1;
         }
       }
-      //jsGB.dbgtrace();
+//      jsGB.dbgtrace();
       Z80._clock.m += Z80._r.m;
       GPU.checkline();
       Timer.inc();
@@ -59,7 +59,6 @@ const jsGB = {
 
     // fclock divided into 1000 frame segments
     _frameCounter.frames += 1000;
-    document.getElementById('fps').textContent = (1000 / (Date.now() - t0)) << 0;
   },
 
   reset: function() {
@@ -117,7 +116,8 @@ const jsGB = {
 
   run: function() {
     Z80._stop = 0;
-    jsGB.run_interval = window.setInterval(jsGB.frame, 15);
+//    jsGB.run_interval = window.setInterval(jsGB.frame, 15);
+    jsGB.run_interval = window.setInterval(jsGB.frame, 1);
     jsGB.frameCounter = {start: Date.now(), frames: 0};
     jsGB.frame_interval = window.setInterval(function() {
       var now = Date.now();
@@ -215,14 +215,14 @@ const jsGB = {
     if (l.length == 1) l = '0' + l;
     var pc = Z80._r.pc.toString(16);
     if (pc.length < 4) {
-      p = '';
-      for (i = 4; i > pc.length; i--) p += '0';
+      let p = '';
+      for (let i = 4; i > pc.length; i--) p += '0';
       pc = p + pc;
     }
     var sp = Z80._r.sp.toString(16);
     if (sp.length < 4) {
-      p = '';
-      for (i = 4; i > sp.length; i--) p += '0';
+      let p = '';
+      for (let i = 4; i > sp.length; i--) p += '0';
       sp = p + sp;
     }
     jsGB.trace +=
