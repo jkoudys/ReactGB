@@ -20,9 +20,7 @@ const jsGB = {
     do {
       if (Z80._halt) Z80._r.m = 1;
       else {
-        //  Z80._r.r = (Z80._r.r+1) & 127;
-        Z80._map[MMU.rb(Z80._r.pc++)]();
-        Z80._r.pc &= 65535;
+        Z80.exec();
       }
       if (Z80._r.ime && MMU._ie && MMU._if) {
         Z80._halt = 0;

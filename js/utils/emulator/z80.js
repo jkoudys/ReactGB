@@ -10,19 +10,6 @@ import MMU from './mmu.js';
 const Z80 = {
   // Registers
   _r: {
-    a: 0,
-    b: 0,
-    c: 0,
-    d: 0,
-    e: 0,
-    h: 0,
-    l: 0,
-    f: 0,
-    sp: 0,
-    pc: 0,
-    i: 0,
-    r: 0,
-    m: 0,
     ime: 0
   },
 
@@ -203,7 +190,6 @@ const Z80 = {
       Z80._r.m = 1;
     },
     LDrr_hh: function() {
-      Z80._r.h = Z80._r.h;
       Z80._r.m = 1;
     },
     LDrr_hl: function() {
@@ -439,6 +425,16 @@ const Z80 = {
       Z80._r.m = 5;
     },
 
+    // LD (mm), SP
+    // Save SP to given address
+    // 0x08
+    LDmmSP: function() {
+      var addr = MMU.rw(Z80._r.pc);
+      Z80._r.pc += 2;
+      MMU.ww(addr, Z80._r.sp);
+      Z80._r.m = 5;
+    },
+
     LDHLIA: function() {
       MMU.wb((Z80._r.h << 8) + Z80._r.l, Z80._r.a);
       Z80._r.l = (Z80._r.l + 1) & 255;
@@ -630,33 +626,64 @@ const Z80 = {
       if ((Z80._r.a ^ a ^ m) & 0x10) Z80._r.f |= 0x20;
       Z80._r.m = 2;
     },
+
+    // ADD HL, BC
+    // 0x09
     ADDHLBC: function() {
+      // HL + BC
       var hl = (Z80._r.h << 8) + Z80._r.l;
-      hl += (Z80._r.b << 8) + Z80._r.c;
-      if (hl > 65535) Z80._r.f |= 0x10;
-      else Z80._r.f &= 0xEF;
-      Z80._r.h = (hl >> 8) & 255;
-      Z80._r.l = hl & 255;
+      var sum = hl + (Z80._r.b << 8) + Z80._r.c;
+      var flags = 0;
+      if ((hl & 0xFFF) > (sum & 0xFFF)) {
+        flags += 0x20;
+      }
+      if (sum > 0xFFFF) {
+        flags += 0x10;
+      }
+      Z80._r.f = (Z80._r.f & 0x40) + flags;
+      Z80._r.h = (sum >> 8) & 0xFF;
+      Z80._r.l = sum & 0xFF;
       Z80._r.m = 3;
     },
+
+    // ADD HL, DE
+    // 0x19
     ADDHLDE: function() {
+      // HL + DE
       var hl = (Z80._r.h << 8) + Z80._r.l;
-      hl += (Z80._r.d << 8) + Z80._r.e;
-      if (hl > 65535) Z80._r.f |= 0x10;
-      else Z80._r.f &= 0xEF;
-      Z80._r.h = (hl >> 8) & 255;
-      Z80._r.l = hl & 255;
+      var sum = hl + (Z80._r.d << 8) + Z80._r.e;
+      var flags = 0;
+      if ((hl & 0xFFF) > (sum & 0xFFF)) {
+        flags += 0x20;
+      }
+      if (sum > 0xFFFF) {
+        flags += 0x10;
+      }
+      Z80._r.f = (Z80._r.f & 0x40) + flags;
+      Z80._r.h = (sum >> 8) & 0xFF;
+      Z80._r.l = sum & 0xFF;
       Z80._r.m = 3;
     },
+
+    // ADD HL, HL
+    // 0x29
     ADDHLHL: function() {
+      // Optimized add - double the HL
       var hl = (Z80._r.h << 8) + Z80._r.l;
-      hl += (Z80._r.h << 8) + Z80._r.l;
-      if (hl > 65535) Z80._r.f |= 0x10;
-      else Z80._r.f &= 0xEF;
-      Z80._r.h = (hl >> 8) & 255;
-      Z80._r.l = hl & 255;
+      var sum = hl << 1;
+      var flags = 0;
+      if ((hl & 0xFFF) > (sum & 0xFFF)) {
+        flags += 0x20;
+      }
+      if (sum > 0xFFFF) {
+        flags += 0x10;
+      }
+      Z80._r.f = (Z80._r.f & 0x40) + flags;
+      Z80._r.h = (sum >> 8) & 0xFF;
+      Z80._r.l = sum & 0xFF;
       Z80._r.m = 3;
     },
+
     ADDHLSP: function() {
       var hl = (Z80._r.h << 8) + Z80._r.l;
       hl += Z80._r.sp;
@@ -1032,15 +1059,44 @@ const Z80 = {
       Z80._r.m = 2;
     },
 
+    // DAA
+    // 0x27
     DAA: function() {
-      var a = Z80._r.a;
-      if ((Z80._r.f & 0x20) || ((Z80._r.a & 15) > 9)) Z80._r.a += 6;
-      Z80._r.f &= 0xEF;
-      if ((Z80._r.f & 0x20) || (a > 0x99)) {
-        Z80._r.a += 0x60;
-        Z80._r.f |= 0x10;
+      /**
+       Flag Register
+       7 	6 	5 	4 	3 	2 	1 	0
+       Z 	N 	H 	C 	0 	0 	0 	0
+       Zero Add/Subtract Half Carry Carry
+       0x80 0x40         0x20       0x10
+       */
+      if (!(Z80._r.f & 0x40)) {
+        if ((Z80._r.f & 0x10) || Z80._r.a > 0x99) {
+          Z80._r.a = (Z80._r.a + 0x60) & 0xFF;
+          Z80._r.f |= 0x10;
+        }
+        if ((Z80._r.f & 0x20) || (Z80._r.a & 0xF) > 0x9) {
+          Z80._r.a = (Z80._r.a + 0x06) & 0xFF;
+          Z80._r.f &= 0b11010000;
+        }
       }
-      Z80._r.m = 1;
+      else if ((Z80._r.f & 0x30) === 0x30) {
+        Z80._r.a = (Z80._r.a + 0x9A) & 0xFF;
+        Z80._r.f &= 0b11010000;
+      }
+      else if ((Z80._r.f & 0x10)) {
+        Z80._r.a = (Z80._r.a + 0xA0) & 0xFF;
+      }
+      else if (Z80._r.f & 0x20) {
+        Z80._r.a = (Z80._r.a + 0xFA) & 0xFF;
+        Z80._r.f &= 0b11010000;
+      }
+
+      if (Z80._r.a === 0) {
+        Z80._r.f |= 0x80;
+      } else {
+        Z80._r.f &= 0b01110000;
+      }
+      Z80._r.m = 4;
     },
 
     ANDr_b: function() {
@@ -1091,11 +1147,14 @@ const Z80 = {
       Z80._r.f = Z80._r.a ? 0 : 0x80;
       Z80._r.m = 2;
     },
+
+    // AND n
+    // 0xE6
     ANDn: function() {
       Z80._r.a &= MMU.rb(Z80._r.pc);
       Z80._r.pc++;
-      Z80._r.a &= 255;
-      Z80._r.f = Z80._r.a ? 0 : 0x80;
+      Z80._r.a &= 0xFF;
+      Z80._r.f = (Z80._r.a ? 0 : 0x80) | 0x20;
       Z80._r.m = 2;
     },
 
