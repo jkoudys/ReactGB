@@ -10,7 +10,7 @@ import MMU from './mmu.js';
 const Z80 = {
   // Registers
   _r: {
-    ime: 0
+    ime: true
   },
 
   _rsv: {
@@ -48,7 +48,7 @@ const Z80 = {
     Z80._halt = 0;
     Z80._stop = 0;
     Z80._clock.m = 0;
-    Z80._r.ime = 1;
+    Z80._r.ime = true;
     LOG.out('Z80', 'Reset.');
   },
 
@@ -684,15 +684,27 @@ const Z80 = {
       Z80._r.m = 3;
     },
 
+    // ADD HL, SP
+    // 0x39
     ADDHLSP: function() {
       var hl = (Z80._r.h << 8) + Z80._r.l;
-      hl += Z80._r.sp;
-      if (hl > 65535) Z80._r.f |= 0x10;
-      else Z80._r.f &= 0xEF;
-      Z80._r.h = (hl >> 8) & 255;
-      Z80._r.l = hl & 255;
+      var sum = hl + Z80._r.sp;
+      var flags = 0;
+      if (sum > 0xFFFF) {
+        flags += 0x10;
+      }
+      if ((hl & 0xFFF) > (sum & 0xFFF)) {
+        flags += 0x20;
+      }
+      flags += Z80._r.f & 0x80;
+      Z80._r.f = flags;
+      Z80._r.h = (hl >> 8) & 0xFF;
+      Z80._r.l = hl & 0xFF;
       Z80._r.m = 3;
     },
+
+    // ADD SP, n
+    // 0xE8
     ADDSPn: function() {
       var i = MMU.rb(Z80._r.pc);
       if (i > 127) i = -((~i + 1) & 255);
@@ -3143,7 +3155,7 @@ const Z80 = {
       Z80._r.m = 3;
     },
     RETI: function() {
-      Z80._r.ime = 1;
+      Z80._r.ime = true;
       Z80._ops.rrs();
       Z80._r.pc = MMU.rw(Z80._r.sp);
       Z80._r.sp += 2;
@@ -3277,18 +3289,28 @@ const Z80 = {
     NOP: function() {
       Z80._r.m = 1;
     },
+
     HALT: function() {
-      Z80._halt = 1;
+      if (Z80._r.ime) {
+        Z80._halt = true;
+      }
       Z80._r.m = 1;
+      console.log('HALT');
     },
 
     DI: function() {
-      Z80._r.ime = 0;
+      Z80._r.ime = false;
       Z80._r.m = 1;
+      console.log('DI');
     },
+
+    // EI
+    // Enable Interrupts
+    // 0xFB
     EI: function() {
-      Z80._r.ime = 1;
+      Z80._r.ime = true;
       Z80._r.m = 1;
+      console.log('EI');
     },
 
     /*--- Helper functions ---*/

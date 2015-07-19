@@ -52,7 +52,7 @@ const Timer = {
       if (_clock.div == 16) {
         _clock.div = 0;
         _div++;
-        _div &= 255;
+        _div &= 0xFF;
       }
     }
 

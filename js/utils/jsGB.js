@@ -23,8 +23,8 @@ const jsGB = {
         Z80.exec();
       }
       if (Z80._r.ime && MMU._ie && MMU._if) {
-        Z80._halt = 0;
-        Z80._r.ime = 0;
+        Z80._halt = false;
+        Z80._r.ime = false;
         var ifired = MMU._ie & MMU._if;
         if (ifired & 1) {
           MMU._if &= 0xFE;
@@ -42,7 +42,7 @@ const jsGB = {
           MMU._if &= 0xEF;
           Z80._ops.RST60();
         } else {
-          Z80._r.ime = 1;
+          Z80._r.ime = true;
         }
       }
 //      jsGB.dbgtrace();
@@ -69,7 +69,7 @@ const jsGB = {
     Z80._r.pc = 0x100;
     MMU._inbios = 0;
     Z80._r.sp = 0xFFFE;
-    Z80._r.hl = 0x014D;
+//    Z80._r.hl = 0x014D;
     Z80._r.c = 0x13;
     Z80._r.e = 0xD8;
     Z80._r.a = 1;
@@ -242,8 +242,8 @@ const jsGB = {
 
   step: function() {
     if (Z80._r.ime && MMU._ie && MMU._if) {
-      Z80._halt = 0;
-      Z80._r.ime = 0;
+      Z80._halt = false;
+      Z80._r.ime = false;
       if ((MMU._ie & 1) && (MMU._if & 1)) {
         MMU._if &= 0xFE;
         Z80._ops.RST40();
@@ -254,7 +254,7 @@ const jsGB = {
       } else {
         Z80._r.r = (Z80._r.r + 1) & 127;
         Z80._map[MMU.rb(Z80._r.pc++)]();
-        Z80._r.pc &= 65535;
+        Z80._r.pc &= 0xFFFF;
       }
     }
     Z80._clock.m += Z80._r.m;
