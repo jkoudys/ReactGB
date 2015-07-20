@@ -138,60 +138,7 @@ const jsGB = {
   },
 
   dbgupdate: function() {
-    var t = document.getElementById('reg').getElementsByTagName('td');
-    var x, j, k;
-    for (var i = 0; i < t.length; i++) {
-      if (t[i].className == 'reg') {
-        switch (t[i].getAttribute('rel')) {
-          case 'a':
-          case 'b':
-          case 'c':
-          case 'd':
-          case 'e':
-            x = Z80._r[t[i].getAttribute('rel')].toString(16);
-            if (x.length === 1) {
-              x = "0" + x;
-            }
-          break;
-          case 'pc':
-            case 'sp':
-            x = Z80._r[t[i].getAttribute('rel')].toString(16);
-            if (x.length < 4) {
-              let p = '';
-              for (let j = 4; j > x.length; j--) {
-                p += '0';
-                x = p + x;
-              }
-            }
-          break;
-          case 'hl':
-            k = (Z80._r.h << 8) + Z80._r.l;
-            x = k.toString(16);
-            if (x.length < 4) {
-              let p = '';
-              for (j = 4; j > x.length; j--) p += "0";
-              x = p + x;
-            }
-            break;
-            case 'f':
-              x = (Z80._r.f >> 4).toString(2);
-            if (x.length < 4) {
-              let p = '';
-              for (j = 4; j > x.length; j--) p += "0";
-              x = p + x;
-            }
-          break;
-        }
-        t[i].innerHTML = x;
-      } else if (t[i].className == 'io') {
-        j = parseInt(t[i].getAttribute('rel'), 16);
-        x = MMU.rb(0xFF00 + j).toString(16);
-        if (typeof(x) != 'undefined') {
-          if (x.length == 1) x = '0' + x;
-          t[i].innerHTML = x;
-        }
-      }
-    }
+    // TODO: write out the current debug state
   },
 
   dbgtrace: function() {
