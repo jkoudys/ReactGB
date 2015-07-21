@@ -128,8 +128,8 @@ const GPU = {
 //    return new ImageData(scaled, 640, 576);
   },
 
-  checkline: function() {
-    GPU._modeclocks += Z80._r.m;
+  checkline: function(ticks) {
+    GPU._modeclocks += ticks;
     switch (GPU._linemode) {
       // In hblank
       case 0:

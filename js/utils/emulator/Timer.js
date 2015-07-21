@@ -40,10 +40,10 @@ const Timer = {
     }
   },
 
-  inc: function() {
+  inc: function(ticks) {
     var oldclk = _clock.main;
 
-    _clock.sub += Z80._r.m;
+    _clock.sub += ticks;
     if (_clock.sub > 3) {
       _clock.main++;
       _clock.sub -= 4;

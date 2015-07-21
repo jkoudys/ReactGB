@@ -2,7 +2,6 @@ import LOG from './log.js';
 import GPU from './gpu.js';
 import KEY from './key.js';
 import Timer from './Timer.js';
-import BinFileReader from './fileread.js';
 
 const MMU = {
   _bios: new Uint8Array([
@@ -23,7 +22,7 @@ const MMU = {
     0x21, 0x04, 0x01, 0x11, 0xA8, 0x00, 0x1A, 0x13, 0xBE, 0x20, 0xFE, 0x23, 0x7D, 0xFE, 0x34, 0x20,
     0xF5, 0x06, 0x19, 0x78, 0x86, 0x23, 0x05, 0x20, 0xFB, 0x86, 0x20, 0xFE, 0x3E, 0x01, 0xE0, 0x50
   ]),
-  _rom: '',
+  _rom: null,
   _carttype: 0,
   _mbc: [{}, {
     rombank: 0,
@@ -65,10 +64,13 @@ const MMU = {
     LOG.out('MMU', 'Reset.');
   },
 
-  load: function(file) {
-    let b = new BinFileReader(file);
-    MMU._rom = b.readString(b.getFileSize(), 0);
-    MMU._carttype = MMU._rom.charCodeAt(0x0147);
+  /**
+   * Load a buffer as the ROM
+   * @param ArrayBuffer buffer The ROM itself
+   */
+  load: function(buffer) {
+    MMU._rom = new Uint8Array(buffer);
+    MMU._carttype = MMU._rom[0x0147];
 
     LOG.out('MMU', 'ROM loaded, ' + MMU._rom.length + ' bytes.');
   },
@@ -84,20 +86,20 @@ const MMU = {
             LOG.out('MMU', 'Leaving BIOS.');
           }
         } else {
-          return MMU._rom.charCodeAt(addr);
+          return MMU._rom[addr];
         }
 
       case 0x1000:
       case 0x2000:
       case 0x3000:
-        return MMU._rom.charCodeAt(addr);
+        return MMU._rom[addr];
 
         // ROM bank 1
       case 0x4000:
       case 0x5000:
       case 0x6000:
       case 0x7000:
-        return MMU._rom.charCodeAt(MMU._romoffs + (addr & 0x3FFF));
+        return MMU._rom[MMU._romoffs + (addr & 0x3FFF)];
 
         // VRAM
       case 0x8000:

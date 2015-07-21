@@ -9,54 +9,73 @@ import BinFileReader from './emulator/fileread.js';
 
 var _frameCounter = {start: 0, frames: 0};
 
+// Target fps - no need for this to be higher than what you can see
+const fps = 60;
+
 const jsGB = {
   run_interval: 0,
   frame_interval: 0,
   trace: '',
 
   frame: function() {
-    var fclock = Z80._clock.m + 17556;
+    // A separate 'frame clock', so we can run multiple z80 cycles per
+    // frame we update to the canvas.
+    var fclock = Z80.speed * fps;
+    var clockTicks = 0;
     var brk = document.getElementById('breakpoint').value;
+    var opTicks = 0;
     do {
-      if (Z80._halt) Z80._r.m = 1;
-      else {
-        Z80.exec();
+      if (Z80._halt) {
+        opTicks = 1;
+      } else {
+        opTicks = Z80.exec();
       }
-      if (Z80._r.ime && MMU._ie && MMU._if) {
+      if (Z80.isInterruptable() && MMU._ie && MMU._if) {
         Z80._halt = false;
-        Z80._r.ime = false;
+        Z80.disableInterrupts();
         var ifired = MMU._ie & MMU._if;
-        if (ifired & 1) {
+        if (ifired & 0x01) {
           MMU._if &= 0xFE;
           Z80._ops.RST40();
-        } else if (ifired & 2) {
+        } else if (ifired & 0x02) {
           MMU._if &= 0xFD;
           Z80._ops.RST48();
-        } else if (ifired & 4) {
+        } else if (ifired & 0x04) {
           MMU._if &= 0xFB;
           Z80._ops.RST50();
-        } else if (ifired & 8) {
+        } else if (ifired & 0x08) {
           MMU._if &= 0xF7;
           Z80._ops.RST58();
-        } else if (ifired & 16) {
+        } else if (ifired & 0x10) {
           MMU._if &= 0xEF;
           Z80._ops.RST60();
         } else {
-          Z80._r.ime = true;
+          Z80.enableInterrupts();
         }
       }
-//      jsGB.dbgtrace();
-      Z80._clock.m += Z80._r.m;
-      GPU.checkline();
-      Timer.inc();
+      clockTicks += opTicks;
+      GPU.checkline(opTicks);
+      Timer.inc(opTicks);
       if ((brk && parseInt(brk, 16) == Z80._r.pc) || Z80._stop) {
         jsGB.pause();
         break;
       }
-    } while (Z80._clock.m < fclock);
+      // Run until we need to update the screen again
+    } while (clockTicks < fclock);
 
     // fclock divided into 1000 frame segments
-    _frameCounter.frames += 1000;
+    _frameCounter.frames += 0;
+  },
+
+  // Load a remote ROM
+  getROM: function(url) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url);
+    xhr.responseType = 'arraybuffer';
+    xhr.onload = function() {
+      MMU.load(this.response);
+    };
+    xhr.send();
   },
 
   reset: function() {
@@ -66,19 +85,14 @@ const jsGB = {
     Z80.reset();
     KEY.reset();
     Timer.reset();
-    Z80._r.pc = 0x100;
     MMU._inbios = 0;
-    Z80._r.sp = 0xFFFE;
-//    Z80._r.hl = 0x014D;
-    Z80._r.c = 0x13;
-    Z80._r.e = 0xD8;
-    Z80._r.a = 1;
-    MMU.load(document.getElementById('file').value);
+
+    var xhr = new XMLHttpRequest();
+    jsGB.getROM(document.getElementById('file').value);
 
     document.getElementById('op_reset').onclick = jsGB.reset;
     document.getElementById('op_run').onclick = jsGB.run;
     document.getElementById('op_run').innerHTML = 'Run';
-    document.getElementById('op_step').onclick = jsGB.step;
 
     document.getElementById('tilepixels').innerHTML = '';
     var tp = document.createElement('div');
@@ -142,36 +156,7 @@ const jsGB = {
   },
 
   dbgtrace: function() {
-    var a = Z80._r.a.toString(16);
-    if (a.length == 1) a = '0' + a;
-    var b = Z80._r.b.toString(16);
-    if (b.length == 1) b = '0' + b;
-    var c = Z80._r.c.toString(16);
-    if (c.length == 1) c = '0' + c;
-    var d = Z80._r.d.toString(16);
-    if (d.length == 1) d = '0' + d;
-    var e = Z80._r.e.toString(16);
-    if (e.length == 1) e = '0' + e;
-    var f = Z80._r.f.toString(16);
-    if (f.length == 1) f = '0' + f;
-    var h = Z80._r.h.toString(16);
-    if (h.length == 1) h = '0' + h;
-    var l = Z80._r.l.toString(16);
-    if (l.length == 1) l = '0' + l;
-    var pc = Z80._r.pc.toString(16);
-    if (pc.length < 4) {
-      let p = '';
-      for (let i = 4; i > pc.length; i--) p += '0';
-      pc = p + pc;
-    }
-    var sp = Z80._r.sp.toString(16);
-    if (sp.length < 4) {
-      let p = '';
-      for (let i = 4; i > sp.length; i--) p += '0';
-      sp = p + sp;
-    }
-    jsGB.trace +=
-      ("A" + a + "/B" + b + "/C" + c + "/D" + d + "/E" + e + "/F" + f + "/H" + h + "/L" + l + "/PC" + pc + "/SP" + sp + "\n");
+    // TODO: Run a debug trace
   },
 
   dbgtile: function() {
@@ -186,32 +171,6 @@ const jsGB = {
       }
     }
   },
-
-  step: function() {
-    if (Z80._r.ime && MMU._ie && MMU._if) {
-      Z80._halt = false;
-      Z80._r.ime = false;
-      if ((MMU._ie & 1) && (MMU._if & 1)) {
-        MMU._if &= 0xFE;
-        Z80._ops.RST40();
-      }
-    } else {
-      if (Z80._halt) {
-        Z80._r.m = 1;
-      } else {
-        Z80._r.r = (Z80._r.r + 1) & 127;
-        Z80._map[MMU.rb(Z80._r.pc++)]();
-        Z80._r.pc &= 0xFFFF;
-      }
-    }
-    Z80._clock.m += Z80._r.m;
-    Z80._clock.t += (Z80._r.m * 4);
-    GPU.checkline();
-    if (Z80._stop) {
-      jsGB.pause();
-    }
-    jsGB.dbgupdate();
-  }
 };
 
 export default jsGB;

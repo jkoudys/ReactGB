@@ -4,15 +4,24 @@
  * Imran Nazar, May 2009
  * Notes: This is a GameBoy Z80, not a Z80. There are differences. Mainly the F
  */
-/**
- * TODO: look into changing all the various functions with generalized ones,
- * e.g. ld8Regfrom16Reg() for all loading 8 bit registers from 16 bit registers
- * Since there's already an array mapping the opcodes to their functions, this
- * would let us severely chop down the number of functions and complexity
- * therin.
- */
 import LOG from './log.js';
 import MMU from './mmu.js';
+
+/**
+ * Flag constants
+ * I have faith that a modern JIT, especially once es6 rolls around, will
+ * be able to optimize a bunch of consts as equivalent to inlining them. Other
+ * implementations use bools for the flags, but since F is actually a register,
+ * this more C-like approach makes sense.
+ */
+// Set if result was zero
+const F_ZERO = 0x80;
+// Set if result was > 0xFF for addition, or < 0x00 for subtraction
+const F_CARRY = 0x10;
+// Set if lower nibble went > 0x0F for add, or upper nibble < 0xF0 for sub
+const F_HCARRY = 0x20;
+// Set if last op was a subtraction
+const F_OP = 0x40;
 
 /**
  * The Registers!
@@ -30,3072 +39,1507 @@ import MMU from './mmu.js';
 
 // Backwards-ordering allows pairing of registers as little-endian numbers
 // L H E D C B F A PC SP
-var registers = new Uint8Array(12);
+var registers = new ArrayBuffer(12);
 
 // Address the byte-boundaries. Downside is, everything needs a [0], but
 // the plus side is, actual uints in JS!
-var regHL = new Uint16Array(registers.buffer, 0, 1);
-var regDE = new Uint16Array(registers.buffer, 2, 1);
-var regBC = new Uint16Array(registers.buffer, 4, 1);
-var regAF = new Uint16Array(registers.buffer, 6, 1);
-var regPC = new Uint16Array(registers.buffer, 8, 1);
-var regSP = new Uint16Array(registers.buffer, 10, 1);
+var regHL = new Uint16Array(registers, 0, 1);
+var regDE = new Uint16Array(registers, 2, 1);
+var regBC = new Uint16Array(registers, 4, 1);
+var regAF = new Uint16Array(registers, 6, 1);
+var regPC = new Uint16Array(registers, 8, 1);
+var regSP = new Uint16Array(registers, 10, 1);
 
 // Address 8-bit boundaries
-var regL = new Uint8Array(registers.buffer, 0, 1);
-var regH = new Uint8Array(registers.buffer, 1, 1);
-var regE = new Uint8Array(registers.buffer, 2, 1);
-var regD = new Uint8Array(registers.buffer, 3, 1);
-var regC = new Uint8Array(registers.buffer, 4, 1);
-var regB = new Uint8Array(registers.buffer, 5, 1);
-var regF = new Uint8Array(registers.buffer, 6, 1);
-var regA = new Uint8Array(registers.buffer, 7, 1);
+var regL = new Uint8Array(registers, 0, 1);
+var regH = new Uint8Array(registers, 1, 1);
+var regE = new Uint8Array(registers, 2, 1);
+var regD = new Uint8Array(registers, 3, 1);
+var regC = new Uint8Array(registers, 4, 1);
+var regB = new Uint8Array(registers, 5, 1);
+var regF = new Uint8Array(registers, 6, 1);
+var regA = new Uint8Array(registers, 7, 1);
 
 // The Interrupts Enabled flag
 var interruptsEnabled = true;
 
 const Z80 = {
-  // Registers
-  _r: {
-  },
+  _halt: false,
+  _stop: false,
 
-  _clock: {
-    m: 0
-  },
-
-  _halt: 0,
-  _stop: 0,
+  // Clock speed, in Hz
+  // TODO: add speed modes for GBC support
+  speed: 4190000,
 
   reset: function() {
-    for (let i = 0; i < registers.length; i++) {
-      registers[i] = 0;
-    }
-    Z80._r.i = 0;
-    Z80._r.r = 0;
-    Z80._r.m = 0;
+    //CPU Registers and Flags:
+    regAF[0] = 0x01B0;
+    regBC[0] = 0x0013;
+    regDE[0] = 0x00D8;
+    regHL[0] = 0x014D;
+    regSP[0] = 0xFFFE;
+    regPC[0] = 0x0100;
+
     Z80._halt = 0;
     Z80._stop = 0;
-    Z80._clock.m = 0;
     interruptsEnabled = true;
     LOG.out('Z80', 'Reset.');
   },
 
-  exec: function() {
-    Z80._r.r = (Z80._r.r + 1) & 127;
-    Z80._map[MMU.rb(regPC[0]++)]();
-    regPC[0];
-    Z80._clock.m += Z80._r.m;
+  isInterruptable: function() {
+    return interruptsEnabled;
   },
 
-  _ops: {
-    /*--- Load/store ---*/
-    /**
-     * Loads a register from another register
-     * @param Uint8Array registerTo
-     * @param Uint8Array registerFrom
-     * @return int Clock ticks
-     */
-    ldReg(registerTo, registerFrom) {
-      registerTo[0] = registerFrom[0];
-      Z80._r.m = 1;
-      return 1;
-    },
+  disableInterrupts: function() {
+    interruptsEnabled = false;
+  },
 
-    LDrHLm_b: function() {
-      regB[0] = MMU.rb(regHL[0]);
-      Z80._r.m = 2;
-    },
-    LDrHLm_c: function() {
-      regC[0] = MMU.rb(regHL[0]);
-      Z80._r.m = 2;
-    },
-    LDrHLm_d: function() {
-      regD[0] = MMU.rb(regHL[0]);
-      Z80._r.m = 2;
-    },
-    LDrHLm_e: function() {
-      regE[0] = MMU.rb(regHL[0]);
-      Z80._r.m = 2;
-    },
-    LDrHLm_h: function() {
-      regH[0] = MMU.rb(regHL[0]);
-      Z80._r.m = 2;
-    },
-    LDrHLm_l: function() {
-      regL[0] = MMU.rb(regHL[0]);
-      Z80._r.m = 2;
-    },
-    LDrHLm_a: function() {
-      regA[0] = MMU.rb(regHL[0]);
-      Z80._r.m = 2;
-    },
+  enabledInterrupts: function() {
+    interruptsEnabled = true;
+  },
 
-    LDHLmr_b: function() {
-      MMU.wb(regHL[0], regB[0]);
-      Z80._r.m = 2;
-    },
-    LDHLmr_c: function() {
-      MMU.wb(regHL[0], regC[0]);
-      Z80._r.m = 2;
-    },
-    LDHLmr_d: function() {
-      MMU.wb(regHL[0], regD[0]);
-      Z80._r.m = 2;
-    },
-    LDHLmr_e: function() {
-      MMU.wb(regHL[0], regE[0]);
-      Z80._r.m = 2;
-    },
-    LDHLmr_h: function() {
-      MMU.wb(regHL[0], regH[0]);
-      Z80._r.m = 2;
-    },
-    LDHLmr_l: function() {
-      MMU.wb(regHL[0], regL[0]);
-      Z80._r.m = 2;
-    },
-    LDHLmr_a: function() {
-      MMU.wb(regHL[0], regA[0]);
-      Z80._r.m = 2;
-    },
+  /**
+   * Execute the opcode pointed to by the program counter, and increment
+   * the counter to the next code.
+   * @return int Clock ticks
+   */
+  exec: function() {
+    return _map[MMU.rb(regPC[0]++)]();
+  },
+};
 
-    LDrn_b: function() {
-      regB[0] = MMU.rb(regPC[0]);
-      regPC[0]++;
-      Z80._r.m = 2;
-    },
-    LDrn_c: function() {
-      regC[0] = MMU.rb(regPC[0]);
-      regPC[0]++;
-      Z80._r.m = 2;
-    },
-    LDrn_d: function() {
-      regD[0] = MMU.rb(regPC[0]);
-      regPC[0]++;
-      Z80._r.m = 2;
-    },
-    LDrn_e: function() {
-      regE[0] = MMU.rb(regPC[0]);
-      regPC[0]++;
-      Z80._r.m = 2;
-    },
-    LDrn_h: function() {
-      regH[0] = MMU.rb(regPC[0]);
-      regPC[0]++;
-      Z80._r.m = 2;
-    },
-    LDrn_l: function() {
-      regL[0] = MMU.rb(regPC[0]);
-      regPC[0]++;
-      Z80._r.m = 2;
-    },
-    LDrn_a: function() {
-      regA[0] = MMU.rb(regPC[0]);
-      regPC[0]++;
-      Z80._r.m = 2;
-    },
+const _ops = {
+  /*--- Load/store ---*/
+  /**
+   * Loads a register from another register
+   * @param Uint8Array registerTo
+   * @param Uint8Array registerFrom
+   * @return int Clock ticks
+   */
+  ldReg(registerTo, registerFrom) {
+    registerTo[0] = registerFrom[0];
+    return 4;
+  },
 
-    LDHLmn: function() {
-      MMU.wb(regHL[0], MMU.rb(regPC[0]));
-      regPC[0]++;
-      Z80._r.m = 3;
-    },
+  /**
+   * Loads a register with memory from HL
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  ldRegMem(register) {
+    register[0] = MMU.rb(regHL[0]);
+    return 8;
+  },
 
-    LDBCmA: function() {
-      MMU.wb(regBC[0], regA[0]);
-      Z80._r.m = 2;
-    },
-    LDDEmA: function() {
-      MMU.wb(regDE[0], regA[0]);
-      Z80._r.m = 2;
-    },
+  /**
+   * Load into memory from a register
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  ldMemReg(register) {
+    MMU.wb(regHL[0], register[0]);
+    return 8;
+  },
 
-    LDmmA: function() {
-      MMU.wb(MMU.rw(regPC[0]), regA[0]);
-      regPC[0] += 2;
-      Z80._r.m = 4;
-    },
+  /**
+   * Load a literal value into a 8-bit register
+   * LD B, n
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  ldRegVal(register) {
+    register[0] = MMU.rb(regPC[0]);
+    regPC[0]++;
+    return 8;
+  },
 
-    LDABCm: function() {
-      regA[0] = MMU.rb(regBC[0]);
-      Z80._r.m = 2;
-    },
-    LDADEm: function() {
-      regA[0] = MMU.rb(regDE[0]);
-      Z80._r.m = 2;
-    },
+  /**
+   * Load a literal value into HL
+   * @return int Clock ticks
+   */
+  LDHLmn: function() {
+    MMU.wb(regHL[0], MMU.rb(regPC[0]));
+    regPC[0]++;
+    return 12;
+  },
 
-    LDAmm: function() {
-      regA[0] = MMU.rb(MMU.rw(regPC[0]));
-      regPC[0] += 2;
-      Z80._r.m = 4;
-    },
+  LDBCmA: function() {
+    MMU.wb(regBC[0], regA[0]);
+    return 8;
+  },
+  LDDEmA: function() {
+    MMU.wb(regDE[0], regA[0]);
+    return 8;
+  },
 
-    LDBCnn: function() {
-      regC[0] = MMU.rb(regPC[0]);
-      regB[0] = MMU.rb(regPC[0] + 1);
-      regPC[0] += 2;
-      Z80._r.m = 3;
-    },
-    LDDEnn: function() {
-      regE[0] = MMU.rb(regPC[0]);
-      regD[0] = MMU.rb(regPC[0] + 1);
-      regPC[0] += 2;
-      Z80._r.m = 3;
-    },
-    LDHLnn: function() {
-      regHL[0] = MMU.rw(regPC[0]);
-      regPC[0] += 2;
-      Z80._r.m = 3;
-    },
-    LDSPnn: function() {
-      regSP[0] = MMU.rw(regPC[0]);
-      regPC[0] += 2;
-      Z80._r.m = 3;
-    },
+  LDmmA: function() {
+    MMU.wb(MMU.rw(regPC[0]), regA[0]);
+    regPC[0] += 2;
+    return 16;
+  },
 
-    LDHLmm: function() {
-      var i = MMU.rw(regPC[0]);
-      regPC[0] += 2;
-      regHL[0] = MMU.rw(i);
-      Z80._r.m = 5;
-    },
-    LDmmHL: function() {
-      var i = MMU.rw(regPC[0]);
-      regPC[0] += 2;
-      MMU.ww(i, regHL[0]);
-      Z80._r.m = 5;
-    },
+  LDABCm: function() {
+    regA[0] = MMU.rb(regBC[0]);
+    return 8;
+  },
+  LDADEm: function() {
+    regA[0] = MMU.rb(regDE[0]);
+    return 8;
+  },
 
-    // LD (mm), SP
-    // Save SP to given address
-    // 0x08
-    LDmmSP: function() {
-      var addr = MMU.rw(regPC[0]);
-      regPC[0] += 2;
-      MMU.ww(addr, regSP[0]);
-      Z80._r.m = 5;
-    },
+  LDAmm: function() {
+    regA[0] = MMU.rb(MMU.rw(regPC[0]));
+    regPC[0] += 2;
+    return 16;
+  },
 
-    // LDI (HL), A
-    // Save A to address pointed to by HL, and increment HL
-    LDHLIA: function() {
-      MMU.wb(regHL[0], regA[0]);
-      regHL[0]++;
-      Z80._r.m = 2;
-    },
+  LDBCnn: function() {
+    regC[0] = MMU.rb(regPC[0]);
+    regB[0] = MMU.rb(regPC[0] + 1);
+    regPC[0] += 2;
+    return 12;
+  },
+  LDDEnn: function() {
+    regE[0] = MMU.rb(regPC[0]);
+    regD[0] = MMU.rb(regPC[0] + 1);
+    regPC[0] += 2;
+    return 12;
+  },
+  LDHLnn: function() {
+    regHL[0] = MMU.rw(regPC[0]);
+    regPC[0] += 2;
+    return 12;
+  },
+  LDSPnn: function() {
+    regSP[0] = MMU.rw(regPC[0]);
+    regPC[0] += 2;
+    return 12;
+  },
 
-    // LDI A, HL
-    LDAHLI: function() {
-      regA[0] = MMU.rb(regHL[0]);
-      regHL[0]++;
-      Z80._r.m = 2;
-    },
+  LDHLmm: function() {
+    var i = MMU.rw(regPC[0]);
+    regPC[0] += 2;
+    regHL[0] = MMU.rw(i);
+    return 20;
+  },
+  LDmmHL: function() {
+    var i = MMU.rw(regPC[0]);
+    regPC[0] += 2;
+    MMU.ww(i, regHL[0]);
+    return 20;
+  },
 
-    // LDD HL, A
-    LDHLDA: function() {
-      MMU.wb(regHL[0], regA[0]);
-      regHL[0]--;
-      Z80._r.m = 2;
-    },
+  // LD (mm), SP
+  // Save SP to given address
+  // 0x08
+  LDmmSP: function() {
+    var addr = MMU.rw(regPC[0]);
+    regPC[0] += 2;
+    MMU.ww(addr, regSP[0]);
+    return 20;
+  },
 
-    // LDD A, HL
-    LDAHLD: function() {
-      regA[0] = MMU.rb(regHL[0]);
-      regHL[0]--;
-      Z80._r.m = 2;
-    },
+  // LDI (HL), A
+  // Save A to address pointed to by HL, and increment HL
+  LDHLIA: function() {
+    MMU.wb(regHL[0], regA[0]);
+    regHL[0]++;
+    return 8;
+  },
 
-    LDAIOn: function() {
-      regA[0] = MMU.rb(0xFF00 + MMU.rb(regPC[0]));
-      regPC[0]++;
-      Z80._r.m = 3;
-    },
-    LDIOnA: function() {
-      MMU.wb(0xFF00 + MMU.rb(regPC[0]), regA[0]);
-      regPC[0]++;
-      Z80._r.m = 3;
-    },
-    LDAIOC: function() {
-      regA[0] = MMU.rb(0xFF00 + regC[0]);
-      Z80._r.m = 2;
-    },
-    LDIOCA: function() {
-      MMU.wb(0xFF00 + regC[0], regA[0]);
-      Z80._r.m = 2;
-    },
+  // LDI A, HL
+  LDAHLI: function() {
+    regA[0] = MMU.rb(regHL[0]);
+    regHL[0]++;
+    return 8;
+  },
 
-    LDHLSPn: function() {
-      var i = MMU.rb(regPC[0]);
-      if (i > 0x7F) {
-        i = -((~i + 1) & 0xFF);
+  // LDD HL, A
+  LDHLDA: function() {
+    MMU.wb(regHL[0], regA[0]);
+    regHL[0]--;
+    return 8;
+  },
+
+  // LDD A, HL
+  LDAHLD: function() {
+    regA[0] = MMU.rb(regHL[0]);
+    regHL[0]--;
+    return 8;
+  },
+
+  LDAIOn: function() {
+    regA[0] = MMU.rb(0xFF00 + MMU.rb(regPC[0]));
+    regPC[0]++;
+    return 12;
+  },
+  LDIOnA: function() {
+    MMU.wb(0xFF00 + MMU.rb(regPC[0]), regA[0]);
+    regPC[0]++;
+    return 12;
+  },
+  LDAIOC: function() {
+    regA[0] = MMU.rb(0xFF00 + regC[0]);
+    return 8;
+  },
+  LDIOCA: function() {
+    MMU.wb(0xFF00 + regC[0], regA[0]);
+    return 8;
+  },
+
+  LDHLSPn: function() {
+    var i = MMU.rb(regPC[0]);
+    if (i > 0x7F) {
+      i = -((~i + 1) & 0xFF);
+    }
+    regPC[0]++;
+    i += regSP[0];
+    regHL[0] = i;
+    return 12;
+  },
+
+  // LD SP, HL
+  // 0xF9
+  LDSPHL: function() {
+    regSP[0] = regHL[0];
+    return 12;
+  },
+
+  /**
+   * Swap nibbles in 8-bit register
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  swapNibbles: function(register) {
+    var tr = regB[0];
+    regB[0] = ((tr & 0xF) << 4) | ((tr & 0xF0) >> 4);
+    regF[0] = regB[0] ? 0 : F_ZERO;
+    return 4;
+  },
+
+  /**
+   * Swap nibbles in memory
+   * @return int Clock ticks
+   */
+  swapNibblesMem: function() {
+    var i = MMU.rb(regHL[0]);
+    i = ((i & 0xF) << 4) | ((i & 0xF0) >> 4);
+    MMU.wb(HL[0], i);
+    // Best guess
+    return 8;
+  },
+
+  /*--- Data processing ---*/
+  /**
+   * Add register to accumulator
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  addReg: function(register) {
+    var a = regA[0];
+    regA[0] += register[0];
+    // TODO: make sure all these '< a' checks actually make sense..
+    regF[0] = ((regA[0] < a) ? 0x10 : 0) | (regA[0] ? 0 : F_ZERO);
+    if ((regA[0] ^ register[0] ^ a) & 0x10) regF[0] |= F_HCARRY;
+    return 4;
+  },
+
+  // ADD A, (HL)
+  // Add value pointed to by HL to A
+  // 0x86
+  ADDHL: function() {
+    var a = regA[0];
+    var m = MMU.rb(regHL[0]);
+    regA[0] += m;
+    regF[0] = (regA[0] < a) ? F_CARRY : 0;
+    if (!regA[0]) regF[0] |= F_ZERO;
+    if ((regA[0] ^ a ^ m) & 0x10) regF[0] |= F_HCARRY;
+    return 8;
+  },
+  ADDn: function() {
+    var a = regA[0];
+    var m = MMU.rb(regPC[0]);
+    regA[0] += m;
+    regPC[0]++;
+    regF[0] = (regA[0] < a) ? F_CARRY : 0;
+    if (!regA[0]) regF[0] |= F_ZERO;
+    if ((regA[0] ^ a ^ m) & 0x10) regF[0] |= F_HCARRY;
+    return 8;
+  },
+
+  /**
+  * Add a 16-bit to HL
+  * ADD HL, BC
+  * @param Uint16Array register
+  * @return int Clock ticks
+  */
+  addHLReg: function(register) {
+    var sum = regHL[0] + register[0];
+    var flags = 0;
+    if ((regHL[0] & 0xFFF) > (sum & 0xFFF)) {
+      flags += 0x20;
+    }
+    if (sum > 0xFFFF) {
+      flags += 0x10;
+    }
+    regF[0] = (regF[0] & F_OP) + flags;
+    regHL[0] = sum;
+    return 12;
+  },
+
+  // ADD SP, n
+  // 0xE8
+  ADDSPn: function() {
+    var i = MMU.rb(regPC[0]);
+    if (i > 0x7F) {
+      i = -((~i + 1) & 0xFF);
+    }
+    regPC[0]++;
+    regSP[0] += i;
+    return 16;
+  },
+
+  /**
+   * Add with carry
+   * ADC A, n
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  adcReg: function(register) {
+    var a = regA[0];
+    regA[0] += register[0];
+    regA[0] += (regF[0] & F_CARRY) ? 1 : 0;
+    regF[0] = ((regA[0] < a) ? F_CARRY : 0) | (regA[0] ? 0 : F_ZERO);
+    if ((regA[0] ^ register[0] ^ a) & 0x10) regF[0] |= F_HCARRY;
+    return 4;
+  },
+
+  ADCHL: function() {
+    var a = regA[0];
+    var m = MMU.rb(regHL[0]);
+    regA[0] += m + ((regF[0] & F_CARRY) ? 1 : 0);
+    regF[0] = ((regA[0] < a) ? F_CARRY : 0) | (regA[0] ? 0 : F_ZERO);
+    if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= F_HCARRY;
+    return 8;
+  },
+
+  // ADC A, n
+  // Add 8-bit immediate and carry to A
+  // 0xCE
+  ADCn: function() {
+    var a = regA[0];
+    var m = MMU.rb(regPC[0]);
+    a += m + ((regF[0] & F_CARRY) ? 1 : 0);
+    regPC[0]++;
+    regA[0] = a;
+    regF[0] = ((a > 0xFF) ? F_CARRY : 0) | (regA[0] ? 0 : F_ZERO);
+    if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= F_HCARRY;
+    return 8;
+  },
+
+  /**
+   * Subtract register from accumulator, e.g. SUB A, B
+   * @param Uint8Array register The register to load
+   * @return int The clock ticks
+   */
+  subReg: function(register) {
+    var a = regA[0];
+    a -= register[0];
+    regA[0] = a;
+    // All flags are updated
+    regF[0] = F_OP | ((a < 0) ? F_CARRY : 0) | (regA[0] ? 0 : F_ZERO);
+    if ((regA[0] ^ register[0] ^ a) & 0x10) {
+      regF[0] |= F_HCARRY;
+    }
+    return 1
+  },
+
+  SUBHL: function() {
+    var a = regA[0];
+    var m = MMU.rb(regHL[0]);
+    a -= m;
+    regA[0] = a
+    regF[0] = F_OP | ((a < 0) ? F_CARRY : 0) | (regA[0] ? 0 : F_ZERO);
+    if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= F_HCARRY;
+    return 8;
+  },
+
+  // Subtract 8-bit immediate from A
+  // 0xD6
+  SUBn: function() {
+    var a = regA[0];
+    var m = MMU.rb(regPC[0]);
+    a -= m;
+    regPC[0]++;
+    regA[0] = a;
+    regF[0] = F_OP | ((a < 0) ? F_CARRY : 0) | (regA[0] ? 0 : F_ZERO);
+    if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= F_HCARRY;
+    return 8;
+  },
+
+  /**
+   * Subtract and carry register from A
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  subcReg: function(register) {
+    var sum = regA[0] - register[0] - ((regF[0] & F_CARRY) ? 1 : 0);
+    regA[0] = sum;
+    var flags = F_OP | (regA[0] ? 0 : F_ZERO) | ((sum < 0) ? F_CARRY : 0);
+    if ((regA[0] ^ register[0] ^ sum) & 0x10) regF[0] |= F_HCARRY;
+    return 4;
+  },
+
+  SBCHL: function() {
+    var a = regA[0];
+    var m = MMU.rb(regHL[0]);
+    a -= m - ((regF[0] & F_CARRY) ? 1 : 0);
+    regA[0] = a;
+    regF[0] = F_OP | ((a < 0) ? F_CARRY : 0) | (regA[0] ? 0 : F_ZERO);
+    if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= F_HCARRY;
+    return 8;
+  },
+
+  SBCn: function() {
+    var a = regA[0];
+    var m = MMU.rb(regPC[0]);
+    a -= m - ((regF[0] & F_CARRY) ? 1 : 0);
+    regA[0] = a;
+    regF[0] = F_OP | ((a < 0) ? F_CARRY : 0) | (regA[0] ? 0 : F_ZERO);
+    if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= F_HCARRY;
+    regPC[0]++;
+    return 8;
+  },
+
+  /**
+   * Compare 8-bit against accumulator
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  cpReg: function(register) {
+    var i = regA[0];
+    i -= register[0];
+    // TODO: does this need an op flag?
+    regF[0] = F_OP | ((i < 0) ? F_CARRY : 0);
+    i &= 255;
+    if (!i) regF[0] |= F_ZERO;
+    if ((regA[0] ^ register[0] ^ i) & 0x10) regF[0] |= F_HCARRY;
+    return 4;
+  },
+  CPHL: function() {
+    var i = regA[0];
+    var m = MMU.rb(regHL[0]);
+    i -= m;
+    // TODO: check F_OP
+    regF[0] = F_OP | ((i < 0) ? F_CARRY : 0);
+    i &= 0xFF;
+    if (!i) regF[0] |= F_ZERO;
+    if ((regA[0] ^ i ^ m) & 0x10) regF[0] |= F_HCARRY;
+    return 8;
+  },
+  CPn: function() {
+    var i = regA[0];
+    var m = MMU.rb(regPC[0]);
+    i -= m;
+    regPC[0]++;
+    regF[0] = F_OP | ((i < 0) ? F_CARRY : 0);
+    i &= 0xFF;
+    if (!i) regF[0] |= F_ZERO;
+    if ((regA[0] ^ i ^ m) & 0x10) regF[0] |= F_HCARRY;
+    return 8;
+  },
+
+  // DAA
+  // 0x27
+  DAA: function() {
+    if (!(regF[0] & F_OP)) {
+      if ((regF[0] & F_CARRY) || regA[0] > 0x99) {
+        regA[0] = regA[0] + 0x60
+        regF[0] |= F_CARRY;
       }
-      regPC[0]++;
-      i += regSP[0];
-      regHL[0] = i;
-      Z80._r.m = 3;
-    },
-
-    // LD SP, HL
-    // 0xF9
-    LDSPHL: function() {
-      regSP[0] = regHL[0];
-      Z80._r.m = 3;
-    },
-
-    SWAPr_b: function() {
-      var tr = regB[0];
-      regB[0] = ((tr & 0xF) << 4) | ((tr & 0xF0) >> 4);
-      regF[0] = regB[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    SWAPr_c: function() {
-      var tr = regC[0];
-      regC[0] = ((tr & 0xF) << 4) | ((tr & 0xF0) >> 4);
-      regF[0] = regC[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    SWAPr_d: function() {
-      var tr = regD[0];
-      regD[0] = ((tr & 0xF) << 4) | ((tr & 0xF0) >> 4);
-      regF[0] = regD[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    SWAPr_e: function() {
-      var tr = regE[0];
-      regE[0] = ((tr & 0xF) << 4) | ((tr & 0xF0) >> 4);
-      regF[0] = regE[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    SWAPr_h: function() {
-      var tr = regH[0];
-      regH[0] = ((tr & 0xF) << 4) | ((tr & 0xF0) >> 4);
-      regF[0] = regH[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    SWAPr_l: function() {
-      var tr = regL[0];
-      regL[0] = ((tr & 0xF) << 4) | ((tr & 0xF0) >> 4);
-      regF[0] = regL[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    SWAPr_a: function() {
-      var tr = regA[0];
-      regA[0] = ((tr & 0xF) << 4) | ((tr & 0xF0) >> 4);
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-
-    /*--- Data processing ---*/
-    /**
-     * Add register to accumulator
-     * @param Uint8Array register
-     * @return int Clock ticks
-     */
-    addReg: function(register) {
-      var a = regA[0];
-      regA[0] += register[0];
-      // TODO: make sure all these '< a' checks actually make sense..
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ register[0] ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-      return 1;
-    },
-
-    // ADD A, (HL)
-    // Add value pointed to by HL to A
-    // 0x86
-    ADDHL: function() {
-      var a = regA[0];
-      var m = MMU.rb(regHL[0]);
-      regA[0] += m;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ a ^ m) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    ADDn: function() {
-      var a = regA[0];
-      var m = MMU.rb(regPC[0]);
-      regA[0] += m;
-      regPC[0]++;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ a ^ m) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-
-    // ADD HL, BC
-    // 0x09
-    ADDHLBC: function() {
-      // HL + BC
-      var sum = regHL[0] + regBC[0];
-      var flags = 0;
-      if ((regHL[0] & 0xFFF) > (sum & 0xFFF)) {
-        flags += 0x20;
+      if ((regF[0] & F_HCARRY) || (regA[0] & 0xF) > 0x9) {
+        regA[0] = regA[0] + 0x06
+        regF[0] &= ~F_HCARRY;
       }
-      if (sum > 0xFFFF) {
-        flags += 0x10;
-      }
-      regF[0] = (regF[0] & 0x40) + flags;
-      regHL[0] = sum;
-      Z80._r.m = 3;
-    },
-
-    // ADD HL, DE
-    // 0x19
-    ADDHLDE: function() {
-      // HL + DE
-      var sum = regHL[0] + regDE[0];
-      var flags = 0;
-      if ((regHL[0] & 0xFFF) > (sum & 0xFFF)) {
-        flags += 0x20;
-      }
-      if (sum > 0xFFFF) {
-        flags += 0x10;
-      }
-      regF[0] = (regF[0] & 0x40) + flags;
-      regHL[0] = sum;
-      Z80._r.m = 3;
-    },
-
-    // ADD HL, HL
-    // 0x29
-    ADDHLHL: function() {
-      // Optimized add - double the HL
-      var sum = regHL[0] << 1;
-      var flags = 0;
-      if ((regHL[0] & 0xFFF) > (sum & 0xFFF)) {
-        flags += 0x20;
-      }
-      if (sum > 0xFFFF) {
-        flags += 0x10;
-      }
-      regF[0] = (regF[0] & 0x40) + flags;
-      regHL[0] = sum;
-      Z80._r.m = 3;
-    },
-
-    // ADD HL, SP
-    // 0x39
-    ADDHLSP: function() {
-      var sum = regHL[0] + regSP[0];
-      var flags = 0;
-      if (sum > 0xFFFF) {
-        flags += 0x10;
-      }
-      if ((regHL[0] & 0xFFF) > (sum & 0xFFF)) {
-        flags += 0x20;
-      }
-      flags += regF[0] & 0x80;
-      regF[0] = flags;
-      regHL[0] = sum;
-      Z80._r.m = 3;
-    },
-
-    // ADD SP, n
-    // 0xE8
-    ADDSPn: function() {
-      var i = MMU.rb(regPC[0]);
-      if (i > 0x7F) {
-        i = -((~i + 1) & 0xFF);
-      }
-      regPC[0]++;
-      regSP[0] += i;
-      Z80._r.m = 4;
-    },
-
-    ADCr_b: function() {
-      var a = regA[0];
-      regA[0] += regB[0];
-      regA[0] += (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ regB[0] ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-    },
-
-    ADCr_c: function() {
-      var a = regA[0];
-      regA[0] += regC[0];
-      regA[0] += (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ regC[0] ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-    },
-    ADCr_d: function() {
-      var a = regA[0];
-      regA[0] += regD[0];
-      regA[0] += (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ regD[0] ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-    },
-    ADCr_e: function() {
-      var a = regA[0];
-      regA[0] += regE[0];
-      regA[0] += (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ regE[0] ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-    },
-    ADCr_h: function() {
-      var a = regA[0];
-      regA[0] += regH[0];
-      regA[0] += (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ regH[0] ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-    },
-    ADCr_l: function() {
-      var a = regA[0];
-      regA[0] += regL[0];
-      regA[0] += (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ regL[0] ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-    },
-    ADCr_a: function() {
-      var a = regA[0];
-      regA[0] += regA[0];
-      regA[0] += (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ regA[0] ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-    },
-    ADCHL: function() {
-      var a = regA[0];
-      var m = MMU.rb(regHL[0]);
-      regA[0] += m;
-      regA[0] += (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (regA[0] < a) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-
-    // ADC A, n
-    // Add 8-bit immediate and carry to A
-    // 0xCE
-    ADCn: function() {
-      var a = regA[0];
-      var m = MMU.rb(regPC[0]);
-      a += m;
-      regPC[0]++;
-      a += (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (a > 0xFF) ? 0x10 : 0;
-      regA[0] = a;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-
-    /**
-     * Subtract register from accumulator, e.g. SUB A, B
-     * @param Uint8Array register The register to load
-     * @return int The clock ticks
-     */
-    subReg: function(register) {
-      var a = regA[0];
-      a -= register[0];
-      regF[0] = (a < 0) ? 0x50 : 0x40;
-      regA[0] = a;
-      if (!regA[0]) {
-        regF[0] |= 0x80;
-      }
-      if ((regA[0] ^ register[0] ^ a) & 0x10) {
-        regF[0] |= 0x20;
-      }
-      Z80._r.m = 1;
-      // TODO: replace the _r.m with the return
-      return 1
-    },
-
-    SUBHL: function() {
-      var a = regA[0];
-      var m = MMU.rb(regHL[0]);
-      a -= m;
-      regF[0] = (a < 0) ? 0x50 : 0x40;
-      regA[0] = a
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-
-    // Subtract 8-bit immediate from A
-    // 0xD6
-    SUBn: function() {
-      var a = regA[0];
-      var m = MMU.rb(regPC[0]);
-      a -= m;
-      regPC[0]++;
-      regF[0] = (a < 0) ? 0x50 : 0x40;
-      regA[0] = a;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-
-    /**
-     * Subtract and carry register from A
-     * @param Uint8Array register
-     * @return int Clock ticks
-     */
-    subcReg: function(register) {
-      var a = regA[0];
-      a -= register[0];
-      a -= (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (a < 0) ? 0x50 : 0x40;
-      regA[0] = a;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ register[0] ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-      return 1;
-    },
-
-    SBCHL: function() {
-      var a = regA[0];
-      var m = MMU.rb(regHL[0]);
-      a -= m;
-      a -= (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (a < 0) ? 0x50 : 0x40;
-      regA[0] = a;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    SBCn: function() {
-      var a = regA[0];
-      var m = MMU.rb(regPC[0]);
-      a -= m;
-      regPC[0]++;
-      a -= (regF[0] & 0x10) ? 1 : 0;
-      regF[0] = (a < 0) ? 0x50 : 0x40;
-      regA[0] = a;
-      if (!regA[0]) regF[0] |= 0x80;
-      if ((regA[0] ^ m ^ a) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-
-    /**
-     * Compare 8-bit against accumulator
-     * @param Uint8Array register
-     * @return int Clock ticks
-     */
-    cpReg: function(register) {
-      var i = regA[0];
-      i -= register[0];
-      regF[0] = (i < 0) ? 0x50 : 0x40;
-      i &= 255;
-      if (!i) regF[0] |= 0x80;
-      if ((regA[0] ^ register[0] ^ i) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 1;
-      return 1;
-    },
-    CPHL: function() {
-      var i = regA[0];
-      var m = MMU.rb(regHL[0]);
-      i -= m;
-      regF[0] = (i < 0) ? 0x50 : 0x40;
-      i &= 255;
-      if (!i) regF[0] |= 0x80;
-      if ((regA[0] ^ i ^ m) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    CPn: function() {
-      var i = regA[0];
-      var m = MMU.rb(regPC[0]);
-      i -= m;
-      regPC[0]++;
-      regF[0] = (i < 0) ? 0x50 : 0x40;
-      i &= 255;
-      if (!i) regF[0] |= 0x80;
-      if ((regA[0] ^ i ^ m) & 0x10) regF[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-
-    // DAA
-    // 0x27
-    DAA: function() {
-      /**
-       Flag Register
-       7 	6 	5 	4 	3 	2 	1 	0
-       Z 	N 	H 	C 	0 	0 	0 	0
-       Zero Add/Subtract Half Carry Carry
-       0x80 0x40         0x20       0x10
-       */
-      if (!(regF[0] & 0x40)) {
-        if ((regF[0] & 0x10) || regA[0] > 0x99) {
-          regA[0] = regA[0] + 0x60
-          regF[0] |= 0x10;
-        }
-        if ((regF[0] & 0x20) || (regA[0] & 0xF) > 0x9) {
-          regA[0] = regA[0] + 0x06
-          regF[0] &= 0b11010000;
-        }
-      }
-      else if ((regF[0] & 0x30) === 0x30) {
-        regA[0] = regA[0] + 0x9A;
-        regF[0] &= 0b11010000;
-      }
-      else if ((regF[0] & 0x10)) {
-        regA[0] = regA[0] + 0xA0
-      }
-      else if (regF[0] & 0x20) {
-        regA[0] = regA[0] + 0xFA;
-        regF[0] &= 0b11010000;
-      }
-
-      if (regA[0] === 0) {
-        regF[0] |= 0x80;
-      } else {
-        regF[0] &= 0b01110000;
-      }
-      Z80._r.m = 4;
-    },
-
-    ANDr_b: function() {
-      regA[0] &= regB[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ANDr_c: function() {
-      regA[0] &= regC[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ANDr_d: function() {
-      regA[0] &= regD[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ANDr_e: function() {
-      regA[0] &= regE[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ANDr_h: function() {
-      regA[0] &= regH[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ANDr_l: function() {
-      regA[0] &= regL[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ANDr_a: function() {
-      regA[0] &= regA[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ANDHL: function() {
-      regA[0] &= MMU.rb(regHL[0]);
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-
-    // AND n
-    // 0xE6
-    ANDn: function() {
-      regA[0] &= MMU.rb(regPC[0]);
-      regPC[0]++;
-      regF[0] = (regA[0] ? 0 : 0x80) | 0x20;
-      Z80._r.m = 2;
-    },
-
-    ORr_b: function() {
-      regA[0] |= regB[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ORr_c: function() {
-      regA[0] |= regC[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ORr_d: function() {
-      regA[0] |= regD[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ORr_e: function() {
-      regA[0] |= regE[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ORr_h: function() {
-      regA[0] |= regH[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ORr_l: function() {
-      regA[0] |= regL[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ORr_a: function() {
-      regA[0] |= regA[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    ORHL: function() {
-      regA[0] |= MMU.rb(regHL[0]);
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    ORn: function() {
-      regA[0] |= MMU.rb(regPC[0]);
-      regPC[0]++;
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-
-    XORr_b: function() {
-      regA[0] ^= regB[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    XORr_c: function() {
-      regA[0] ^= regC[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    XORr_d: function() {
-      regA[0] ^= regD[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    XORr_e: function() {
-      regA[0] ^= regE[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    XORr_h: function() {
-      regA[0] ^= regH[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    XORr_l: function() {
-      regA[0] ^= regL[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    XORr_a: function() {
-      regA[0] ^= regA[0];
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    XORHL: function() {
-      regA[0] ^= MMU.rb(regHL[0]);
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    XORn: function() {
-      regA[0] ^= MMU.rb(regPC[0]);
-      regPC[0]++;
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-
-    INCr_b: function() {
-      regB[0]++;
-      regF[0] = regB[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    INCr_c: function() {
-      regC[0]++;
-      regF[0] = regC[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    INCr_d: function() {
-      regD[0]++;
-      regF[0] = regD[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    INCr_e: function() {
-      regE[0]++;
-      regF[0] = regE[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    INCr_h: function() {
-      regH[0]++;
-      regF[0] = regH[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    INCr_l: function() {
-      regL[0]++;
-      regF[0] = regL[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    INCr_a: function() {
-      regA[0]++;
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    INCHLm: function() {
-      var i = MMU.rb(regHL[0]) + 1;
-      i &= 255;
-      MMU.wb(regHL[0], i);
-      regF[0] = i ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    // DEC b
-    // 0x05
-    DECr_b: function() {
-      regB[0]--;
-      regB[0] &= 0xFF;
-      // Set the zero flag if 0, half-carry if decremented to 0b00001111, and
-      // the subtract flag to true
-      regF[0] = (regB[0] ? 0 : 0x80) |
-        (((regB[0] & 0xF) === 0xF) ? 0x20 : 0) |
-        0x40;
-      Z80._r.m = 1;
-    },
-    DECr_c: function() {
-      regC[0]--;
-      regF[0] = regC[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    DECr_d: function() {
-      regD[0]--;
-      regF[0] = regD[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    DECr_e: function() {
-      regE[0]--;
-      regF[0] = regE[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    DECr_h: function() {
-      regH[0]--;
-      regF[0] = regH[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    DECr_l: function() {
-      regL[0]--;
-      regF[0] = regL[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    DECr_a: function() {
-      regA[0]--;
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    DECHLm: function() {
-      var i = MMU.rb(regHL[0]) - 1;
-      i &= 255;
-      MMU.wb(regHL[0], i);
-      regF[0] = i ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    INCBC: function() {
-      regBC[0]++;
-      Z80._r.m = 1;
-    },
-    INCDE: function() {
-      regE[0] = regE[0] + 1;
-      if (!regE[0]) {
-        regD[0] = (regD[0] + 1);
-      }
-      Z80._r.m = 1;
-    },
-
-    // INC HL
-    // Increment the HL
-    // 0x23
-    INCHL: function() {
-      regHL[0]++;
-      Z80._r.m = 1;
-    },
-
-    INCSP: function() {
-      regSP[0]++;
-      Z80._r.m = 1;
-    },
-
-    DECBC: function() {
-      regBC[0]--;
-      Z80._r.m = 1;
-    },
-    DECDE: function() {
-      regDE[0]--;
-      Z80._r.m = 1;
-    },
-
-    // DEC HL
-    // Decrement the HL
-    // 0x2B
-    DECHL: function() {
-      regHL[0]--;
-      Z80._r.m = 1;
-    },
-
-    DECSP: function() {
-      regSP[0]--;
-      Z80._r.m = 1;
-    },
-
-    /*--- Bit manipulation ---*/
-    BIT0b: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regB[0] & 0x01) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT0c: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regC[0] & 0x01) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT0d: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regD[0] & 0x01) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT0e: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regE[0] & 0x01) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT0h: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regH[0] & 0x01) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT0l: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regL[0] & 0x01) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT0a: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regA[0] & 0x01) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT0m: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (MMU.rb(regHL[0]) & 0x01) ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    RES0b: function() {
-      regB[0] &= 0xFE;
-      Z80._r.m = 2;
-    },
-    RES0c: function() {
-      regC[0] &= 0xFE;
-      Z80._r.m = 2;
-    },
-    RES0d: function() {
-      regD[0] &= 0xFE;
-      Z80._r.m = 2;
-    },
-    RES0e: function() {
-      regE[0] &= 0xFE;
-      Z80._r.m = 2;
-    },
-    RES0h: function() {
-      regH[0] &= 0xFE;
-      Z80._r.m = 2;
-    },
-    RES0l: function() {
-      regL[0] &= 0xFE;
-      Z80._r.m = 2;
-    },
-    RES0a: function() {
-      regA[0] &= 0xFE;
-      Z80._r.m = 2;
-    },
-    RES0m: function() {
-      var i = MMU.rb(regHL[0]);
-      i &= 0xFE;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    SET0b: function() {
-      regB[0] |= 0x01;
-      Z80._r.m = 2;
-    },
-    SET0c: function() {
-      regB[0] |= 0x01;
-      Z80._r.m = 2;
-    },
-    SET0d: function() {
-      regB[0] |= 0x01;
-      Z80._r.m = 2;
-    },
-    SET0e: function() {
-      regB[0] |= 0x01;
-      Z80._r.m = 2;
-    },
-    SET0h: function() {
-      regB[0] |= 0x01;
-      Z80._r.m = 2;
-    },
-    SET0l: function() {
-      regB[0] |= 0x01;
-      Z80._r.m = 2;
-    },
-    SET0a: function() {
-      regB[0] |= 0x01;
-      Z80._r.m = 2;
-    },
-    SET0m: function() {
-      var i = MMU.rb(regHL[0]);
-      i |= 0x01;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    BIT1b: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regB[0] & 0x02) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT1c: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regC[0] & 0x02) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT1d: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regD[0] & 0x02) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT1e: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regE[0] & 0x02) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT1h: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regH[0] & 0x02) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT1l: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regL[0] & 0x02) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT1a: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regA[0] & 0x02) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT1m: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (MMU.rb(regHL[0]) & 0x02) ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    RES1b: function() {
-      regB[0] &= 0xFD;
-      Z80._r.m = 2;
-    },
-    RES1c: function() {
-      regC[0] &= 0xFD;
-      Z80._r.m = 2;
-    },
-    RES1d: function() {
-      regD[0] &= 0xFD;
-      Z80._r.m = 2;
-    },
-    RES1e: function() {
-      regE[0] &= 0xFD;
-      Z80._r.m = 2;
-    },
-    RES1h: function() {
-      regH[0] &= 0xFD;
-      Z80._r.m = 2;
-    },
-    RES1l: function() {
-      regL[0] &= 0xFD;
-      Z80._r.m = 2;
-    },
-    RES1a: function() {
-      regA[0] &= 0xFD;
-      Z80._r.m = 2;
-    },
-    RES1m: function() {
-      var i = MMU.rb(regHL[0]);
-      i &= 0xFD;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    SET1b: function() {
-      regB[0] |= 0x02;
-      Z80._r.m = 2;
-    },
-    SET1c: function() {
-      regB[0] |= 0x02;
-      Z80._r.m = 2;
-    },
-    SET1d: function() {
-      regB[0] |= 0x02;
-      Z80._r.m = 2;
-    },
-    SET1e: function() {
-      regB[0] |= 0x02;
-      Z80._r.m = 2;
-    },
-    SET1h: function() {
-      regB[0] |= 0x02;
-      Z80._r.m = 2;
-    },
-    SET1l: function() {
-      regB[0] |= 0x02;
-      Z80._r.m = 2;
-    },
-    SET1a: function() {
-      regB[0] |= 0x02;
-      Z80._r.m = 2;
-    },
-    SET1m: function() {
-      var i = MMU.rb(regHL[0]);
-      i |= 0x02;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    BIT2b: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regB[0] & 0x04) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT2c: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regC[0] & 0x04) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT2d: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regD[0] & 0x04) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT2e: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regE[0] & 0x04) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT2h: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regH[0] & 0x04) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT2l: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regL[0] & 0x04) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT2a: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regA[0] & 0x04) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT2m: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (MMU.rb(regHL[0]) & 0x04) ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    RES2b: function() {
-      regB[0] &= 0xFB;
-      Z80._r.m = 2;
-    },
-    RES2c: function() {
-      regC[0] &= 0xFB;
-      Z80._r.m = 2;
-    },
-    RES2d: function() {
-      regD[0] &= 0xFB;
-      Z80._r.m = 2;
-    },
-    RES2e: function() {
-      regE[0] &= 0xFB;
-      Z80._r.m = 2;
-    },
-    RES2h: function() {
-      regH[0] &= 0xFB;
-      Z80._r.m = 2;
-    },
-    RES2l: function() {
-      regL[0] &= 0xFB;
-      Z80._r.m = 2;
-    },
-    RES2a: function() {
-      regA[0] &= 0xFB;
-      Z80._r.m = 2;
-    },
-    RES2m: function() {
-      var i = MMU.rb(regHL[0]);
-      i &= 0xFB;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    SET2b: function() {
-      regB[0] |= 0x04;
-      Z80._r.m = 2;
-    },
-    SET2c: function() {
-      regB[0] |= 0x04;
-      Z80._r.m = 2;
-    },
-    SET2d: function() {
-      regB[0] |= 0x04;
-      Z80._r.m = 2;
-    },
-    SET2e: function() {
-      regB[0] |= 0x04;
-      Z80._r.m = 2;
-    },
-    SET2h: function() {
-      regB[0] |= 0x04;
-      Z80._r.m = 2;
-    },
-    SET2l: function() {
-      regB[0] |= 0x04;
-      Z80._r.m = 2;
-    },
-    SET2a: function() {
-      regB[0] |= 0x04;
-      Z80._r.m = 2;
-    },
-    SET2m: function() {
-      var i = MMU.rb(regHL[0]);
-      i |= 0x04;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    BIT3b: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regB[0] & 0x08) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT3c: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regC[0] & 0x08) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT3d: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regD[0] & 0x08) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT3e: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regE[0] & 0x08) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT3h: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regH[0] & 0x08) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT3l: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regL[0] & 0x08) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT3a: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regA[0] & 0x08) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT3m: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (MMU.rb(regHL[0]) & 0x08) ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    RES3b: function() {
-      regB[0] &= 0xF7;
-      Z80._r.m = 2;
-    },
-    RES3c: function() {
-      regC[0] &= 0xF7;
-      Z80._r.m = 2;
-    },
-    RES3d: function() {
-      regD[0] &= 0xF7;
-      Z80._r.m = 2;
-    },
-    RES3e: function() {
-      regE[0] &= 0xF7;
-      Z80._r.m = 2;
-    },
-    RES3h: function() {
-      regH[0] &= 0xF7;
-      Z80._r.m = 2;
-    },
-    RES3l: function() {
-      regL[0] &= 0xF7;
-      Z80._r.m = 2;
-    },
-    RES3a: function() {
-      regA[0] &= 0xF7;
-      Z80._r.m = 2;
-    },
-    RES3m: function() {
-      var i = MMU.rb(regHL[0]);
-      i &= 0xF7;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    SET3b: function() {
-      regB[0] |= 0x08;
-      Z80._r.m = 2;
-    },
-    SET3c: function() {
-      regB[0] |= 0x08;
-      Z80._r.m = 2;
-    },
-    SET3d: function() {
-      regB[0] |= 0x08;
-      Z80._r.m = 2;
-    },
-    SET3e: function() {
-      regB[0] |= 0x08;
-      Z80._r.m = 2;
-    },
-    SET3h: function() {
-      regB[0] |= 0x08;
-      Z80._r.m = 2;
-    },
-    SET3l: function() {
-      regB[0] |= 0x08;
-      Z80._r.m = 2;
-    },
-    SET3a: function() {
-      regB[0] |= 0x08;
-      Z80._r.m = 2;
-    },
-    SET3m: function() {
-      var i = MMU.rb(regHL[0]);
-      i |= 0x08;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    BIT4b: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regB[0] & 0x10) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT4c: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regC[0] & 0x10) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT4d: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regD[0] & 0x10) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT4e: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regE[0] & 0x10) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT4h: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regH[0] & 0x10) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT4l: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regL[0] & 0x10) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT4a: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regA[0] & 0x10) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT4m: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (MMU.rb(regHL[0]) & 0x10) ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    RES4b: function() {
-      regB[0] &= 0xEF;
-      Z80._r.m = 2;
-    },
-    RES4c: function() {
-      regC[0] &= 0xEF;
-      Z80._r.m = 2;
-    },
-    RES4d: function() {
-      regD[0] &= 0xEF;
-      Z80._r.m = 2;
-    },
-    RES4e: function() {
-      regE[0] &= 0xEF;
-      Z80._r.m = 2;
-    },
-    RES4h: function() {
-      regH[0] &= 0xEF;
-      Z80._r.m = 2;
-    },
-    RES4l: function() {
-      regL[0] &= 0xEF;
-      Z80._r.m = 2;
-    },
-    RES4a: function() {
-      regA[0] &= 0xEF;
-      Z80._r.m = 2;
-    },
-    RES4m: function() {
-      var i = MMU.rb(regHL[0]);
-      i &= 0xEF;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    SET4b: function() {
-      regB[0] |= 0x10;
-      Z80._r.m = 2;
-    },
-    SET4c: function() {
-      regB[0] |= 0x10;
-      Z80._r.m = 2;
-    },
-    SET4d: function() {
-      regB[0] |= 0x10;
-      Z80._r.m = 2;
-    },
-    SET4e: function() {
-      regB[0] |= 0x10;
-      Z80._r.m = 2;
-    },
-    SET4h: function() {
-      regB[0] |= 0x10;
-      Z80._r.m = 2;
-    },
-    SET4l: function() {
-      regB[0] |= 0x10;
-      Z80._r.m = 2;
-    },
-    SET4a: function() {
-      regB[0] |= 0x10;
-      Z80._r.m = 2;
-    },
-    SET4m: function() {
-      var i = MMU.rb(regHL[0]);
-      i |= 0x10;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    BIT5b: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regB[0] & 0x20) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT5c: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regC[0] & 0x20) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT5d: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regD[0] & 0x20) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT5e: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regE[0] & 0x20) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT5h: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regH[0] & 0x20) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT5l: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regL[0] & 0x20) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT5a: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regA[0] & 0x20) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT5m: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (MMU.rb(regHL[0]) & 0x20) ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    RES5b: function() {
-      regB[0] &= 0xDF;
-      Z80._r.m = 2;
-    },
-    RES5c: function() {
-      regC[0] &= 0xDF;
-      Z80._r.m = 2;
-    },
-    RES5d: function() {
-      regD[0] &= 0xDF;
-      Z80._r.m = 2;
-    },
-    RES5e: function() {
-      regE[0] &= 0xDF;
-      Z80._r.m = 2;
-    },
-    RES5h: function() {
-      regH[0] &= 0xDF;
-      Z80._r.m = 2;
-    },
-    RES5l: function() {
-      regL[0] &= 0xDF;
-      Z80._r.m = 2;
-    },
-    RES5a: function() {
-      regA[0] &= 0xDF;
-      Z80._r.m = 2;
-    },
-    RES5m: function() {
-      var i = MMU.rb(regHL[0]);
-      i &= 0xDF;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    SET5b: function() {
-      regB[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    SET5c: function() {
-      regB[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    SET5d: function() {
-      regB[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    SET5e: function() {
-      regB[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    SET5h: function() {
-      regB[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    SET5l: function() {
-      regB[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    SET5a: function() {
-      regB[0] |= 0x20;
-      Z80._r.m = 2;
-    },
-    SET5m: function() {
-      var i = MMU.rb(regHL[0]);
-      i |= 0x20;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    BIT6b: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regB[0] & 0x40) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT6c: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regC[0] & 0x40) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT6d: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regD[0] & 0x40) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT6e: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regE[0] & 0x40) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT6h: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regH[0] & 0x40) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT6l: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regL[0] & 0x40) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT6a: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regA[0] & 0x40) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT6m: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (MMU.rb(regHL[0]) & 0x40) ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    RES6b: function() {
-      regB[0] &= 0xBF;
-      Z80._r.m = 2;
-    },
-    RES6c: function() {
-      regC[0] &= 0xBF;
-      Z80._r.m = 2;
-    },
-    RES6d: function() {
-      regD[0] &= 0xBF;
-      Z80._r.m = 2;
-    },
-    RES6e: function() {
-      regE[0] &= 0xBF;
-      Z80._r.m = 2;
-    },
-    RES6h: function() {
-      regH[0] &= 0xBF;
-      Z80._r.m = 2;
-    },
-    RES6l: function() {
-      regL[0] &= 0xBF;
-      Z80._r.m = 2;
-    },
-    RES6a: function() {
-      regA[0] &= 0xBF;
-      Z80._r.m = 2;
-    },
-    RES6m: function() {
-      var i = MMU.rb(regHL[0]);
-      i &= 0xBF;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    SET6b: function() {
-      regB[0] |= 0x40;
-      Z80._r.m = 2;
-    },
-    SET6c: function() {
-      regB[0] |= 0x40;
-      Z80._r.m = 2;
-    },
-    SET6d: function() {
-      regB[0] |= 0x40;
-      Z80._r.m = 2;
-    },
-    SET6e: function() {
-      regB[0] |= 0x40;
-      Z80._r.m = 2;
-    },
-    SET6h: function() {
-      regB[0] |= 0x40;
-      Z80._r.m = 2;
-    },
-    SET6l: function() {
-      regB[0] |= 0x40;
-      Z80._r.m = 2;
-    },
-    SET6a: function() {
-      regB[0] |= 0x40;
-      Z80._r.m = 2;
-    },
-    SET6m: function() {
-      var i = MMU.rb(regHL[0]);
-      i |= 0x40;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    BIT7b: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regB[0] & 0x80) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT7c: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regC[0] & 0x80) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT7d: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regD[0] & 0x80) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT7e: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regE[0] & 0x80) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT7h: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regH[0] & 0x80) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT7l: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regL[0] & 0x80) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT7a: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (regA[0] & 0x80) ? 0 : 0x80;
-      Z80._r.m = 2;
-    },
-    BIT7m: function() {
-      regF[0] &= 0x1F;
-      regF[0] |= 0x20;
-      regF[0] = (MMU.rb(regHL[0]) & 0x80) ? 0 : 0x80;
-      Z80._r.m = 3;
-    },
-
-    RES7b: function() {
-      regB[0] &= 0x7F;
-      Z80._r.m = 2;
-    },
-    RES7c: function() {
-      regC[0] &= 0x7F;
-      Z80._r.m = 2;
-    },
-    RES7d: function() {
-      regD[0] &= 0x7F;
-      Z80._r.m = 2;
-    },
-    RES7e: function() {
-      regE[0] &= 0x7F;
-      Z80._r.m = 2;
-    },
-    RES7h: function() {
-      regH[0] &= 0x7F;
-      Z80._r.m = 2;
-    },
-    RES7l: function() {
-      regL[0] &= 0x7F;
-      Z80._r.m = 2;
-    },
-    RES7a: function() {
-      regA[0] &= 0x7F;
-      Z80._r.m = 2;
-    },
-    RES7m: function() {
-      var i = MMU.rb(regHL[0]);
-      i &= 0x7F;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    SET7b: function() {
-      regB[0] |= 0x80;
-      Z80._r.m = 2;
-    },
-    SET7c: function() {
-      regB[0] |= 0x80;
-      Z80._r.m = 2;
-    },
-    SET7d: function() {
-      regB[0] |= 0x80;
-      Z80._r.m = 2;
-    },
-    SET7e: function() {
-      regB[0] |= 0x80;
-      Z80._r.m = 2;
-    },
-    SET7h: function() {
-      regB[0] |= 0x80;
-      Z80._r.m = 2;
-    },
-    SET7l: function() {
-      regB[0] |= 0x80;
-      Z80._r.m = 2;
-    },
-    SET7a: function() {
-      regB[0] |= 0x80;
-      Z80._r.m = 2;
-    },
-    SET7m: function() {
-      var i = MMU.rb(regHL[0]);
-      i |= 0x80;
-      MMU.wb(regHL[0], i);
-      Z80._r.m = 4;
-    },
-
-    RLA: function() {
-      var ci = regF[0] & 0x10 ? 1 : 0;
-      var co = regA[0] & 0x80 ? 0x10 : 0;
-      regA[0] = (regA[0] << 1) + ci;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 1;
-    },
-    RLCA: function() {
-      var ci = regA[0] & 0x80 ? 1 : 0;
-      var co = regA[0] & 0x80 ? 0x10 : 0;
-      regA[0] = (regA[0] << 1) + ci;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 1;
-    },
-    RRA: function() {
-      var ci = regF[0] & 0x10 ? 0x80 : 0;
-      var co = regA[0] & 1 ? 0x10 : 0;
-      regA[0] = (regA[0] >> 1) + ci;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 1;
-    },
-    RRCA: function() {
-      var ci = regA[0] & 1 ? 0x80 : 0;
-      var co = regA[0] & 1 ? 0x10 : 0;
-      regA[0] = (regA[0] >> 1) + ci;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 1;
-    },
-
-    RLr_b: function() {
-      var ci = regF[0] & 0x10 ? 1 : 0;
-      var co = regB[0] & 0x80 ? 0x10 : 0;
-      regB[0] = (regB[0] << 1) + ci;
-      regF[0] = (regB[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLr_c: function() {
-      var ci = regF[0] & 0x10 ? 1 : 0;
-      var co = regC[0] & 0x80 ? 0x10 : 0;
-      regC[0] = (regC[0] << 1) + ci;
-      regF[0] = (regC[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLr_d: function() {
-      var ci = regF[0] & 0x10 ? 1 : 0;
-      var co = regD[0] & 0x80 ? 0x10 : 0;
-      regD[0] = (regD[0] << 1) + ci;
-      regF[0] = (regD[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLr_e: function() {
-      var ci = regF[0] & 0x10 ? 1 : 0;
-      var co = regE[0] & 0x80 ? 0x10 : 0;
-      regE[0] = (regE[0] << 1) + ci;
-      regF[0] = (regE[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLr_h: function() {
-      var ci = regF[0] & 0x10 ? 1 : 0;
-      var co = regH[0] & 0x80 ? 0x10 : 0;
-      regH[0] = (regH[0] << 1) + ci;
-      regF[0] = (regH[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLr_l: function() {
-      var ci = regF[0] & 0x10 ? 1 : 0;
-      var co = regL[0] & 0x80 ? 0x10 : 0;
-      regL[0] = (regL[0] << 1) + ci;
-      regF[0] = (regL[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLr_a: function() {
-      var ci = regF[0] & 0x10 ? 1 : 0;
-      var co = regA[0] & 0x80 ? 0x10 : 0;
-      regA[0] = (regA[0] << 1) + ci;
-      regF[0] = (regA[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLHL: function() {
-      var i = MMU.rb(regHL[0]);
-      var ci = regF[0] & 0x10 ? 1 : 0;
-      var co = i & 0x80 ? 0x10 : 0;
-      i = (i << 1) + ci;
-      i &= 255;
-      regF[0] = (i) ? 0 : 0x80;
-      MMU.wb(regHL[0], i);
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 4;
-    },
-
-    RLCr_b: function() {
-      var ci = regB[0] & 0x80 ? 1 : 0;
-      var co = regB[0] & 0x80 ? 0x10 : 0;
-      regB[0] = (regB[0] << 1) + ci;
-      regF[0] = (regB[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLCr_c: function() {
-      var ci = regC[0] & 0x80 ? 1 : 0;
-      var co = regC[0] & 0x80 ? 0x10 : 0;
-      regC[0] = (regC[0] << 1) + ci;
-      regF[0] = (regC[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLCr_d: function() {
-      var ci = regD[0] & 0x80 ? 1 : 0;
-      var co = regD[0] & 0x80 ? 0x10 : 0;
-      regD[0] = (regD[0] << 1) + ci;
-      regF[0] = (regD[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLCr_e: function() {
-      var ci = regE[0] & 0x80 ? 1 : 0;
-      var co = regE[0] & 0x80 ? 0x10 : 0;
-      regE[0] = (regE[0] << 1) + ci;
-      regF[0] = (regE[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLCr_h: function() {
-      var ci = regH[0] & 0x80 ? 1 : 0;
-      var co = regH[0] & 0x80 ? 0x10 : 0;
-      regH[0] = (regH[0] << 1) + ci;
-      regF[0] = (regH[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLCr_l: function() {
-      var ci = regL[0] & 0x80 ? 1 : 0;
-      var co = regL[0] & 0x80 ? 0x10 : 0;
-      regL[0] = (regL[0] << 1) + ci;
-      regF[0] = (regL[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLCr_a: function() {
-      var ci = regA[0] & 0x80 ? 1 : 0;
-      var co = regA[0] & 0x80 ? 0x10 : 0;
-      regA[0] = (regA[0] << 1) + ci;
-      regF[0] = (regA[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RLCHL: function() {
-      var i = MMU.rb(regHL[0]);
-      var ci = i & 0x80 ? 1 : 0;
-      var co = i & 0x80 ? 0x10 : 0;
-      i = (i << 1) + ci;
-      i &= 255;
-      regF[0] = (i) ? 0 : 0x80;
-      MMU.wb(regHL[0], i);
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 4;
-    },
-
-    RRr_b: function() {
-      var ci = regF[0] & 0x10 ? 0x80 : 0;
-      var co = regB[0] & 1 ? 0x10 : 0;
-      regB[0] = (regB[0] >> 1) + ci;
-      regF[0] = (regB[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRr_c: function() {
-      var ci = regF[0] & 0x10 ? 0x80 : 0;
-      var co = regC[0] & 1 ? 0x10 : 0;
-      regC[0] = (regC[0] >> 1) + ci;
-      regF[0] = (regC[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRr_d: function() {
-      var ci = regF[0] & 0x10 ? 0x80 : 0;
-      var co = regD[0] & 1 ? 0x10 : 0;
-      regD[0] = (regD[0] >> 1) + ci;
-      regF[0] = (regD[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRr_e: function() {
-      var ci = regF[0] & 0x10 ? 0x80 : 0;
-      var co = regE[0] & 1 ? 0x10 : 0;
-      regE[0] = (regE[0] >> 1) + ci;
-      regF[0] = (regE[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRr_h: function() {
-      var ci = regF[0] & 0x10 ? 0x80 : 0;
-      var co = regH[0] & 1 ? 0x10 : 0;
-      regH[0] = (regH[0] >> 1) + ci;
-      regF[0] = (regH[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRr_l: function() {
-      var ci = regF[0] & 0x10 ? 0x80 : 0;
-      var co = regL[0] & 1 ? 0x10 : 0;
-      regL[0] = (regL[0] >> 1) + ci;
-      regF[0] = (regL[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRr_a: function() {
-      var ci = regF[0] & 0x10 ? 0x80 : 0;
-      var co = regA[0] & 1 ? 0x10 : 0;
-      regA[0] = (regA[0] >> 1) + ci;
-      regF[0] = (regA[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRHL: function() {
-      var i = MMU.rb(regHL[0]);
-      var ci = regF[0] & 0x10 ? 0x80 : 0;
-      var co = i & 1 ? 0x10 : 0;
-      i = (i >> 1) + ci;
-      i &= 255;
-      MMU.wb(regHL[0], i);
-      regF[0] = (i) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 4;
-    },
-
-    RRCr_b: function() {
-      var ci = regB[0] & 1 ? 0x80 : 0;
-      var co = regB[0] & 1 ? 0x10 : 0;
-      regB[0] = (regB[0] >> 1) + ci;
-      regF[0] = (regB[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRCr_c: function() {
-      var ci = regC[0] & 1 ? 0x80 : 0;
-      var co = regC[0] & 1 ? 0x10 : 0;
-      regC[0] = (regC[0] >> 1) + ci;
-      regF[0] = (regC[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRCr_d: function() {
-      var ci = regD[0] & 1 ? 0x80 : 0;
-      var co = regD[0] & 1 ? 0x10 : 0;
-      regD[0] = (regD[0] >> 1) + ci;
-      regF[0] = (regD[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRCr_e: function() {
-      var ci = regE[0] & 1 ? 0x80 : 0;
-      var co = regE[0] & 1 ? 0x10 : 0;
-      regE[0] = (regE[0] >> 1) + ci;
-      regF[0] = (regE[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRCr_h: function() {
-      var ci = regH[0] & 1 ? 0x80 : 0;
-      var co = regH[0] & 1 ? 0x10 : 0;
-      regH[0] = (regH[0] >> 1) + ci;
-      regF[0] = (regH[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRCr_l: function() {
-      var ci = regL[0] & 1 ? 0x80 : 0;
-      var co = regL[0] & 1 ? 0x10 : 0;
-      regL[0] = (regL[0] >> 1) + ci;
-      regF[0] = (regL[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRCr_a: function() {
-      var ci = regA[0] & 1 ? 0x80 : 0;
-      var co = regA[0] & 1 ? 0x10 : 0;
-      regA[0] = (regA[0] >> 1) + ci;
-      regF[0] = (regA[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    RRCHL: function() {
-      var i = MMU.rb(regHL[0]);
-      var ci = i & 1 ? 0x80 : 0;
-      var co = i & 1 ? 0x10 : 0;
-      i = (i >> 1) + ci;
-      i &= 255;
-      MMU.wb(regHL[0], i);
-      regF[0] = (i) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 4;
-    },
-
-    SLAr_b: function() {
-      var co = regB[0] & 0x80 ? 0x10 : 0;
-      regB[0] = regB[0] << 1;
-      regF[0] = (regB[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLAr_c: function() {
-      var co = regC[0] & 0x80 ? 0x10 : 0;
-      regC[0] = regC[0] << 1;
-      regF[0] = (regC[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLAr_d: function() {
-      var co = regD[0] & 0x80 ? 0x10 : 0;
-      regD[0] = regD[0] << 1;
-      regF[0] = (regD[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLAr_e: function() {
-      var co = regE[0] & 0x80 ? 0x10 : 0;
-      regE[0] = regE[0] << 1;
-      regF[0] = (regE[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLAr_h: function() {
-      var co = regH[0] & 0x80 ? 0x10 : 0;
-      regH[0] = regH[0] << 1;
-      regF[0] = (regH[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLAr_l: function() {
-      var co = regL[0] & 0x80 ? 0x10 : 0;
-      regL[0] = regL[0] << 1;
-      regF[0] = (regL[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLAr_a: function() {
-      var co = regA[0] & 0x80 ? 0x10 : 0;
-      regA[0] = regA[0] << 1;
-      regF[0] = (regA[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-
-    SLLr_b: function() {
-      var co = regB[0] & 0x80 ? 0x10 : 0;
-      regB[0] = (regB[0] << 1) + 1;
-      regF[0] = (regB[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLLr_c: function() {
-      var co = regC[0] & 0x80 ? 0x10 : 0;
-      regC[0] = (regC[0] << 1) + 1;
-      regF[0] = (regC[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLLr_d: function() {
-      var co = regD[0] & 0x80 ? 0x10 : 0;
-      regD[0] = (regD[0] << 1) + 1;
-      regF[0] = (regD[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLLr_e: function() {
-      var co = regE[0] & 0x80 ? 0x10 : 0;
-      regE[0] = (regE[0] << 1) + 1;
-      regF[0] = (regE[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLLr_h: function() {
-      var co = regH[0] & 0x80 ? 0x10 : 0;
-      regH[0] = (regH[0] << 1) + 1;
-      regF[0] = (regH[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLLr_l: function() {
-      var co = regL[0] & 0x80 ? 0x10 : 0;
-      regL[0] = (regL[0] << 1) + 1;
-      regF[0] = (regL[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SLLr_a: function() {
-      var co = regA[0] & 0x80 ? 0x10 : 0;
-      regA[0] = (regA[0] << 1) + 1;
-      regF[0] = (regA[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-
-    SRAr_b: function() {
-      var ci = regB[0] & 0x80;
-      var co = regB[0] & 1 ? 0x10 : 0;
-      regB[0] = (regB[0] >> 1) + ci;
-      regF[0] = (regB[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRAr_c: function() {
-      var ci = regC[0] & 0x80;
-      var co = regC[0] & 1 ? 0x10 : 0;
-      regC[0] = (regC[0] >> 1) + ci;
-      regF[0] = (regC[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRAr_d: function() {
-      var ci = regD[0] & 0x80;
-      var co = regD[0] & 1 ? 0x10 : 0;
-      regD[0] = (regD[0] >> 1) + ci;
-      regF[0] = (regD[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRAr_e: function() {
-      var ci = regE[0] & 0x80;
-      var co = regE[0] & 1 ? 0x10 : 0;
-      regE[0] = (regE[0] >> 1) + ci;
-      regF[0] = (regE[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRAr_h: function() {
-      var ci = regH[0] & 0x80;
-      var co = regH[0] & 1 ? 0x10 : 0;
-      regH[0] = (regH[0] >> 1) + ci;
-      regF[0] = (regH[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRAr_l: function() {
-      var ci = regL[0] & 0x80;
-      var co = regL[0] & 1 ? 0x10 : 0;
-      regL[0] = (regL[0] >> 1) + ci;
-      regF[0] = (regL[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRAr_a: function() {
-      var ci = regA[0] & 0x80;
-      var co = regA[0] & 1 ? 0x10 : 0;
-      regA[0] = (regA[0] >> 1) + ci;
-      regF[0] = (regA[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-
-    SRLr_b: function() {
-      var co = regB[0] & 1 ? 0x10 : 0;
-      regB[0] = regB[0] >> 1;
-      regF[0] = (regB[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRLr_c: function() {
-      var co = regC[0] & 1 ? 0x10 : 0;
-      regC[0] = regC[0] >> 1;
-      regF[0] = (regC[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRLr_d: function() {
-      var co = regD[0] & 1 ? 0x10 : 0;
-      regD[0] = regD[0] >> 1;
-      regF[0] = (regD[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRLr_e: function() {
-      var co = regE[0] & 1 ? 0x10 : 0;
-      regE[0] = regE[0] >> 1;
-      regF[0] = (regE[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRLr_h: function() {
-      var co = regH[0] & 1 ? 0x10 : 0;
-      regH[0] = regH[0] >> 1;
-      regF[0] = (regH[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRLr_l: function() {
-      var co = regL[0] & 1 ? 0x10 : 0;
-      regL[0] = regL[0] >> 1;
-      regF[0] = (regL[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-    SRLr_a: function() {
-      var co = regA[0] & 1 ? 0x10 : 0;
-      regA[0] = regA[0] >> 1;
-      regF[0] = (regA[0]) ? 0 : 0x80;
-      regF[0] = (regF[0] & 0xEF) + co;
-      Z80._r.m = 2;
-    },
-
-    CPL: function() {
-      regA[0] ^= 255;
-      regF[0] = regA[0] ? 0 : 0x80;
-      Z80._r.m = 1;
-    },
-    NEG: function() {
-      regA[0] = 0 - regA[0];
-      regF[0] = (regA[0] < 0) ? 0x10 : 0;
-      if (!regA[0]) regF[0] |= 0x80;
-      Z80._r.m = 2;
-    },
-
-    CCF: function() {
-      var ci = regF[0] & 0x10 ? 0 : 0x10;
-      regF[0] = (regF[0] & 0xEF) + ci;
-      Z80._r.m = 1;
-    },
-    SCF: function() {
-      regF[0] |= 0x10;
-      Z80._r.m = 1;
-    },
-
-    /*--- Stack ---*/
-    PUSHBC: function() {
-      regSP[0]--;
-      MMU.wb(regSP[0], regB[0]);
-      regSP[0]--;
-      MMU.wb(regSP[0], regC[0]);
-      Z80._r.m = 3;
-    },
-    PUSHDE: function() {
-      regSP[0]--;
-      MMU.wb(regSP[0], regD[0]);
-      regSP[0]--;
-      MMU.wb(regSP[0], regE[0]);
-      Z80._r.m = 3;
-    },
-    PUSHHL: function() {
-      // TODO: check if this can use MMU.ww()
-      regSP[0]--;
-      MMU.wb(regSP[0], regH[0]);
-      regSP[0]--;
-      MMU.wb(regSP[0], regL[0]);
-      Z80._r.m = 3;
-    },
-    PUSHAF: function() {
-      regSP[0]--;
-      MMU.wb(regSP[0], regA[0]);
-      regSP[0]--;
-      MMU.wb(regSP[0], regF[0]);
-      Z80._r.m = 3;
-    },
-
-    POPBC: function() {
-      regC[0] = MMU.rb(regSP[0]);
-      regSP[0]++;
-      regB[0] = MMU.rb(regSP[0]);
-      regSP[0]++;
-      Z80._r.m = 3;
-    },
-    POPDE: function() {
-      regE[0] = MMU.rb(regSP[0]);
-      regSP[0]++;
-      regD[0] = MMU.rb(regSP[0]);
-      regSP[0]++;
-      Z80._r.m = 3;
-    },
-    POPHL: function() {
-      // TODO check if this can use MMU.rw()
-      regL[0] = MMU.rb(regSP[0]);
-      regSP[0]++;
-      regH[0] = MMU.rb(regSP[0]);
-      regSP[0]++;
-      Z80._r.m = 3;
-    },
-
-    // POP AF
-    // 0xF1
-    POPAF: function() {
-      // Flags register keeps bottom 4 bits clear
-      regF[0] = MMU.rb(regSP[0]) & 0xF0;
-      regSP[0]++;
-      regA[0] = MMU.rb(regSP[0]);
-      regSP[0]++;
-      Z80._r.m = 3;
-    },
-
-    /*--- Jump ---*/
-    JPnn: function() {
+    }
+    else if ((regF[0] & (F_HCARRY | F_CARRY)) === (F_HCARRY | F_CARRY)) {
+      regA[0] = regA[0] + 0x9A;
+      regF[0] &= ~F_HCARRY;
+    }
+    else if ((regF[0] & F_CARRY)) {
+      regA[0] = regA[0] + 0xA0
+    }
+    else if (regF[0] & F_HCARRY) {
+      regA[0] = regA[0] + 0xFA;
+      regF[0] &= ~F_HCARRY;
+    }
+
+    if (regA[0] === 0) {
+      regF[0] |= F_ZERO;
+    } else {
+      regF[0] &= ~F_ZERO;
+    }
+    return 16;
+  },
+
+  /**
+   * Logic and a register with accumulator
+   * @param Uint8Array register Register to AND
+   * @return int Clock ticks
+   */
+  andReg: function(register) {
+    regA[0] &= register[0];
+    regF[0] = regA[0] ? 0 : F_ZERO;
+    return 4;
+  },
+
+  ANDHL: function() {
+    regA[0] &= MMU.rb(regHL[0]);
+    regF[0] = regA[0] ? 0 : F_ZERO;
+    return 8;
+  },
+
+  // AND n
+  // 0xE6
+  ANDn: function() {
+    regA[0] &= MMU.rb(regPC[0]);
+    regPC[0]++;
+    regF[0] = (regA[0] ? 0 : F_ZERO) | F_HCARRY;
+    return 8;
+  },
+
+  /**
+   * Logic or a register with accumulator
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  orReg: function(register) {
+    regA[0] |= register[0];
+    regF[0] = regA[0] ? 0 : F_ZERO;
+    return 4;
+  },
+
+  ORHL: function() {
+    regA[0] |= MMU.rb(regHL[0]);
+    regF[0] = regA[0] ? 0 : F_ZERO;
+    return 8;
+  },
+  ORn: function() {
+    regA[0] |= MMU.rb(regPC[0]);
+    regPC[0]++;
+    regF[0] = regA[0] ? 0 : 0x80;
+    return 8;
+  },
+
+  /**
+   * Logic xor a register with accumulator
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  xorReg: function(register) {
+    regA[0] ^= register[0];
+    regF[0] = regA[0] ? 0 : F_ZERO;
+    return 4;
+  },
+
+  XORHL: function() {
+    regA[0] ^= MMU.rb(regHL[0]);
+    regF[0] = regA[0] ? 0 : F_ZERO;
+    return 8;
+  },
+
+  XORn: function() {
+    regA[0] ^= MMU.rb(regPC[0]);
+    regPC[0]++;
+    regF[0] = regA[0] ? 0 : F_ZERO;
+    return 8;
+  },
+
+  /**
+   * Increment 8-bit register
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  incReg: function(register) {
+    register[0]++;
+    regF[0] = register[0] ? 0 : F_ZERO;
+    return 4;
+  },
+
+  INCHLm: function() {
+    var i = MMU.rb(regHL[0]) + 1;
+    i &= 0xFF;
+    MMU.wb(regHL[0], i);
+    regF[0] = i ? 0 : F_ZERO;
+    return 12;
+  },
+
+  /**
+   * Decrement an 8-bit register
+   * DEC B
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  decReg: function(register) {
+    register[0]--;
+    // Set the zero flag if 0, half-carry if decremented to 0b00001111, and
+    // the subtract flag to true
+    regF[0] = (register[0] ? 0 : F_ZERO) |
+      (((register[0] & 0xF) === 0xF) ? F_HCARRY : 0) |
+      F_OP;
+    return 4;
+  },
+
+  DECHLm: function() {
+    var i = MMU.rb(regHL[0]) - 1;
+    i &= 0xFF;
+    MMU.wb(regHL[0], i);
+    regF[0] = i ? 0 : F_ZERO;
+    return 12;
+  },
+
+  /**
+   * Increment a 16-bit register
+   * Needs a separate instruction as F is untouched on 16-bit
+   * INC DE
+   * @param Uint16Array register
+   * @return int Clock ticks
+   */
+  incReg16: function(register) {
+    register[0]++;
+    return 4;
+  },
+
+  /**
+   * Decrement a 16-bit register
+   * Needs a separate instruction as F is untouched on 16-bit
+   * DEC BC
+   * @param Uint16Array register
+   * @return int Clock ticks
+   */
+  decReg16: function(register) {
+    register[0]--;
+    return 4;
+  },
+
+  /*--- Bit manipulation ---*/
+  /**
+   * Set a register of a bitmask
+   * Generalizes all the "SET 2, C" etc. instructions
+   * @param int bitmask The bitmask to set
+   * @param Uint8Array register The register to mask
+   * @return int Clock ticks
+   */
+  setReg: function(bitmask, register) {
+    register[0] |= bitmask;
+    return 8;
+  },
+
+ /**
+   * Set a mem address of a bitmask
+   * Generalizes all the "SET 2, (HL)" etc. instructions
+   * @param int bitmask The bitmask to set
+   * @return int Clock ticks
+   */
+  setMem: function(bitmask) {
+    var i = MMU.rb(regHL[0]);
+    i |= bitmask;
+    MMU.wb(regHL[0], i);
+    return 16;
+  },
+
+  /**
+   * Test a bit of a register
+   * @param int bitmask The bit to test
+   * @param Uint8Array register The register to test
+   * @return int Clock ticks
+   */
+  bitReg: function(bitmask, register) {
+    regF[0] &= 0x1F;
+    regF[0] |= 0x20;
+    regF[0] = (register[0] & bitmask) ? 0 : 0x80;
+    return 8;
+  },
+
+  /**
+   * Test a bit against memory
+   * @param int bitmask
+   * @return int Clock ticks
+   */
+  bitMem: function(bitmask) {
+    regF[0] &= 0x1F;
+    regF[0] |= 0x20;
+    regF[0] = (MMU.rb(regHL[0]) & bitmask) ? 0 : 0x80;
+    return 12;
+  },
+
+  /**
+   * Reset (clear) the bit of a register
+   * @param int bitmask
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  resReg: function(bitmask, register) {
+    register[0] &= ~bitmask;
+    return 8;
+  },
+
+  /**
+   * Reset (clear) the bit of memory
+   * @param int bitmask
+   * @return int Clock ticks
+   */
+  resMem: function(bitmask) {
+    var i = MMU.rb(regHL[0]);
+    i &= ~bitmask;
+    MMU.wb(regHL[0], i);
+    return 16;
+  },
+
+  RLA: function() {
+    var ci = regF[0] & F_CARRY ? 1 : 0;
+    var co = regA[0] & 0x80 ? F_CARRY : 0;
+    regA[0] = (regA[0] << 1) + ci;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 4;
+  },
+  RLCA: function() {
+    var ci = regA[0] & 0x80 ? 1 : 0;
+    var co = regA[0] & 0x80 ? 0x10 : 0;
+    regA[0] = (regA[0] << 1) + ci;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 4;
+  },
+  RRA: function() {
+    var ci = regF[0] & F_CARRY ? 0x80 : 0;
+    var co = regA[0] & 1 ? 0x10 : 0;
+    regA[0] = (regA[0] >> 1) + ci;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 4;
+  },
+  RRCA: function() {
+    var ci = regA[0] & 1 ? 0x80 : 0;
+    var co = regA[0] & 1 ? 0x10 : 0;
+    regA[0] = (regA[0] >> 1) + ci;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 4;
+  },
+
+  /**
+   * Rotate left
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  rlReg: function(register) {
+    var ci = regF[0] & F_CARRY ? 1 : 0;
+    var co = register[0] & 0x80 ? 0x10 : 0;
+    register[0] = (register[0] << 1) + ci;
+    regF[0] = (register[0]) ? 0 : F_ZERO;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 8;
+  },
+
+  RLHL: function() {
+    var i = MMU.rb(regHL[0]);
+    var ci = regF[0] & F_CARRY ? 1 : 0;
+    var co = i & 0x80 ? 0x10 : 0;
+    i = (i << 1) + ci;
+    i &= 0xFF;
+    regF[0] = (i) ? 0 : F_ZERO;
+    MMU.wb(regHL[0], i);
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 16;
+  },
+
+  /**
+   * Rotate with left carry register
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  rlcReg: function(register) {
+    var ci = register[0] & 0x80 ? 1 : 0;
+    var co = register[0] & 0x80 ? F_CARRY : 0;
+    register[0] = (register[0] << 1) + ci;
+    regF[0] = (register[0]) ? 0 : F_ZERO;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 8;
+  },
+
+  /**
+   * Rotate memory left with carry register
+   * @return int Clock ticks
+   */
+  RLCHL: function() {
+    var i = MMU.rb(regHL[0]);
+    var ci = i & 0x80 ? 1 : 0;
+    var co = i & 0x80 ? F_CARRY : 0;
+    i = (i << 1) + ci;
+    i &= 0xFF;
+    regF[0] = (i) ? 0 : F_ZERO;
+    MMU.wb(regHL[0], i);
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 16;
+  },
+
+  /**
+   * Rotate right
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  rrReg: function(register) {
+    var ci = regF[0] & 0x10 ? 0x80 : 0;
+    var co = register[0] & 1 ? 0x10 : 0;
+    register[0] = (register[0] >> 1) + ci;
+    regF[0] = (register[0]) ? 0 : 0x80;
+    regF[0] = (regF[0] & 0xEF) + co;
+    return 8;
+  },
+
+  RRHL: function() {
+    var i = MMU.rb(regHL[0]);
+    var ci = regF[0] & F_CARRY ? 0x80 : 0;
+    var co = i & 1 ? F_CARRY : 0;
+    i = (i >> 1) + ci;
+    i &= 0xFF;
+    MMU.wb(regHL[0], i);
+    regF[0] = (i) ? 0 : F_ZERO;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 16;
+  },
+
+  /**
+   * Rotate right with carry
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  rrcReg: function(register) {
+    var ci = register[0] & 1 ? 0x80 : 0;
+    var co = register[0] & 1 ? F_CARRY : 0;
+    register[0] = (register[0] >> 1) + ci;
+    regF[0] = (register[0]) ? 0 : F_ZERO;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 8;
+  },
+
+  RRCHL: function() {
+    var i = MMU.rb(regHL[0]);
+    var ci = i & 1 ? 0x80 : 0;
+    var co = i & 1 ? F_CARRY : 0;
+    i = (i >> 1) + ci;
+    i &= 0xFF;
+    MMU.wb(regHL[0], i);
+    regF[0] = (i) ? 0 : F_ZERO;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 16;
+  },
+
+  /**
+   * Shift left preserving sign
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  slaReg: function(register) {
+    var co = register[0] & 0x80 ? F_CARRY : 0;
+    register[0] <<= 1;
+    regF[0] = register[0] ? 0 : F_ZERO;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 8;
+  },
+
+  /**
+   * Shift value in memory left, preserving sign
+   * SLA (HL)
+   * @return int Clock ticks
+   */
+  slaMem: function() {
+    // Get val in memory
+    var i = MMU.rb(regHL[0]);
+    // If top bit set, then we're carrying
+    var carry = i & 0x80 ? F_CARRY : 0;
+    i <<= 1;
+    regF[0] = i ? 0 : F_ZERO;
+    regF[0] = (regF[0] & ~F_CARRY) + carry;
+    // Best guess to the clock cycles
+    return 16;
+  },
+
+  /**
+   * Shift right preserving sign
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  sraReg: function(register) {
+    var ci = register[0] & 0x80;
+    var co = register[0] & 1 ? F_CARRY : 0;
+    register[0] = (register[0] >> 1) + ci;
+    regF[0] = (register[0]) ? 0 : F_ZERO;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 8;
+  },
+
+  /**
+   * Shift value in memory right, preserving sign
+   * SRA (HL)
+   * @return int Clock ticks
+   */
+  sraMem: function() {
+    // Get val in memory
+    var i = MMU.rb(regHL[0]);
+    // If bottom bit set, then we're carrying
+    var carry = i & 0x01 ? F_CARRY : 0;
+    // Shift right
+    i >>= 1;
+    regF[0] = (i ? 0 : F_ZERO) | carry;
+    //TODO Best guess to the clock cycles
+    return 16;
+  },
+
+  /**
+   * Shift right
+   * @param Uint8Array register
+   * @return int Clock ticks
+   */
+  srlReg: function(register) {
+    var co = register[0] & 1 ? F_CARRY : 0;
+    register[0] = register[0] >> 1;
+    regF[0] = (register[0]) ? 0 : F_ZERO;
+    regF[0] = (regF[0] & ~F_CARRY) + co;
+    return 2
+  },
+
+  /**
+   * Shift value in memory right
+   * @return int Clock ticks
+   */
+  srlMem: function() {
+    var i = MMU.rb(regHL[0]);
+    var carry = (i & 0x01) ? F_CARRY : 0;
+    i >>= 1;
+    regF[0] = ((register[0]) ? 0 : F_ZERO) | carry;
+    return 16
+  },
+
+  CPL: function() {
+    regA[0] ^= 0xFF;
+    regF[0] = regA[0] ? 0 : F_ZERO;
+    return 4;
+  },
+  NEG: function() {
+    regA[0] = 0 - regA[0];
+    regF[0] = (regA[0] < 0) ? F_CARRY : 0;
+    if (!regA[0]) regF[0] |= F_ZERO;
+    return 8;
+  },
+
+  CCF: function() {
+    var ci = regF[0] & 0x10 ? 0 : F_CARRY;
+    regF[0] = (regF[0] & ~F_CARRY) + ci;
+    return 4;
+  },
+  SCF: function() {
+    regF[0] |= F_CARRY;
+    return 4;
+  },
+
+  /*--- Stack ---*/
+  PUSHBC: function() {
+    regSP[0]--;
+    MMU.wb(regSP[0], regB[0]);
+    regSP[0]--;
+    MMU.wb(regSP[0], regC[0]);
+    return 12;
+  },
+  PUSHDE: function() {
+    regSP[0]--;
+    MMU.wb(regSP[0], regD[0]);
+    regSP[0]--;
+    MMU.wb(regSP[0], regE[0]);
+    return 12;
+  },
+  PUSHHL: function() {
+    // TODO: check if this can use MMU.ww()
+    regSP[0]--;
+    MMU.wb(regSP[0], regH[0]);
+    regSP[0]--;
+    MMU.wb(regSP[0], regL[0]);
+    return 12;
+  },
+  PUSHAF: function() {
+    regSP[0]--;
+    MMU.wb(regSP[0], regA[0]);
+    regSP[0]--;
+    MMU.wb(regSP[0], regF[0]);
+    return 12;
+  },
+
+  POPBC: function() {
+    regC[0] = MMU.rb(regSP[0]);
+    regSP[0]++;
+    regB[0] = MMU.rb(regSP[0]);
+    regSP[0]++;
+    return 12;
+  },
+  POPDE: function() {
+    regE[0] = MMU.rb(regSP[0]);
+    regSP[0]++;
+    regD[0] = MMU.rb(regSP[0]);
+    regSP[0]++;
+    return 12;
+  },
+  POPHL: function() {
+    // TODO check if this can use MMU.rw()
+    regL[0] = MMU.rb(regSP[0]);
+    regSP[0]++;
+    regH[0] = MMU.rb(regSP[0]);
+    regSP[0]++;
+    return 12;
+  },
+
+  // POP AF
+  // 0xF1
+  POPAF: function() {
+    // Flags register keeps bottom 4 bits clear
+    regF[0] = MMU.rb(regSP[0]) & 0xF0;
+    regSP[0]++;
+    regA[0] = MMU.rb(regSP[0]);
+    regSP[0]++;
+    return 12;
+  },
+
+  /*--- Jump ---*/
+  JPnn: function() {
+    regPC[0] = MMU.rw(regPC[0]);
+    return 12;
+  },
+  JPHL: function() {
+    regPC[0] = regHL[0];
+    return 4;
+  },
+  JPNZnn: function() {
+    if ((regF[0] & F_ZERO) === 0x00) {
       regPC[0] = MMU.rw(regPC[0]);
-      Z80._r.m = 3;
-    },
-    JPHL: function() {
-      regPC[0] = regHL[0];
-      Z80._r.m = 1;
-    },
-    JPNZnn: function() {
-      Z80._r.m = 3;
-      if ((regF[0] & 0x80) == 0x00) {
-        regPC[0] = MMU.rw(regPC[0]);
-        Z80._r.m++;
-      } else regPC[0] += 2;
-    },
-    JPZnn: function() {
-      Z80._r.m = 3;
-      if ((regF[0] & 0x80) == 0x80) {
-        regPC[0] = MMU.rw(regPC[0]);
-        Z80._r.m++;
-      } else regPC[0] += 2;
-    },
-    JPNCnn: function() {
-      Z80._r.m = 3;
-      if ((regF[0] & 0x10) == 0x00) {
-        regPC[0] = MMU.rw(regPC[0]);
-        Z80._r.m++;
-      } else regPC[0] += 2;
-    },
-    JPCnn: function() {
-      Z80._r.m = 3;
-      if ((regF[0] & 0x10) == 0x10) {
-        regPC[0] = MMU.rw(regPC[0]);
-        Z80._r.m++;
-      } else regPC[0] += 2;
-    },
+      return 16;
+    } else {
+      regPC[0] += 2;
+      return 12;
+    }
+  },
+  JPZnn: function() {
+    if ((regF[0] & F_ZERO) === F_ZERO) {
+      regPC[0] = MMU.rw(regPC[0]);
+      return 16;
+    } else {
+      regPC[0] += 2;
+      return 12;
+    }
+  },
+  JPNCnn: function() {
+    if ((regF[0] & F_CARRY) === 0) {
+      regPC[0] = MMU.rw(regPC[0]);
+      return 16;
+    } else {
+      regPC[0] += 2;
+      return 12;
+    }
+  },
+  JPCnn: function() {
+    if ((regF[0] & F_CARRY) !== 0) {
+      regPC[0] = MMU.rw(regPC[0]);
+      return 16;
+    } else {
+      regPC[0] += 2;
+      return 12;
+    }
+  },
 
-    JRn: function() {
-      var i = MMU.rb(regPC[0]);
-      if (i > 0x7F) {
-        i = -((~i + 1) & 0xFF);
-      }
-      regPC[0]++;
-      Z80._r.m = 2;
+  JRn: function() {
+    var i = MMU.rb(regPC[0]);
+    if (i > 0x7F) {
+      i = -((~i + 1) & 0xFF);
+    }
+    regPC[0] += i + 1;
+    return 12;
+  },
+  JRNZn: function() {
+    var i = MMU.rb(regPC[0]);
+    if (i > 0x7F) i = -((~i + 1) & 0xFF);
+    regPC[0]++;
+    if ((regF[0] & F_ZERO) === 0x00) {
       regPC[0] += i;
-      Z80._r.m++;
-    },
-    JRNZn: function() {
-      var i = MMU.rb(regPC[0]);
-      if (i > 127) i = -((~i + 1) & 255);
-      regPC[0]++;
-      Z80._r.m = 2;
-      if ((regF[0] & 0x80) == 0x00) {
-        regPC[0] += i;
-        Z80._r.m++;
-      }
-    },
-    JRZn: function() {
-      var i = MMU.rb(regPC[0]);
-      if (i > 127) i = -((~i + 1) & 255);
-      regPC[0]++;
-      Z80._r.m = 2;
-      if ((regF[0] & 0x80) == 0x80) {
-        regPC[0] += i;
-        Z80._r.m++;
-      }
-    },
-    JRNCn: function() {
-      var i = MMU.rb(regPC[0]);
-      if (i > 127) i = -((~i + 1) & 255);
-      regPC[0]++;
-      Z80._r.m = 2;
-      if ((regF[0] & 0x10) == 0x00) {
-        regPC[0] += i;
-        Z80._r.m++;
-      }
-    },
-    JRCn: function() {
-      var i = MMU.rb(regPC[0]);
-      if (i > 127) i = -((~i + 1) & 255);
-      regPC[0]++;
-      Z80._r.m = 2;
-      if ((regF[0] & 0x10) == 0x10) {
-        regPC[0] += i;
-        Z80._r.m++;
-      }
-    },
+      return 12;
+    } else {
+      return 8;
+    }
+  },
+  JRZn: function() {
+    var i = MMU.rb(regPC[0]);
+    if (i > 0x7F) i = -((~i + 1) & 0xFF);
+    regPC[0]++;
+    if (regF[0] & F_ZERO) {
+      regPC[0] += i;
+      return 12;
+    } else {
+      return 8;
+    }
+  },
+  JRNCn: function() {
+    var i = MMU.rb(regPC[0]);
+    if (i > 0x7F) i = -((~i + 1) & 0xFF);
+    regPC[0]++;
+    if ((regF[0] & F_CARRY) === 0) {
+      regPC[0] += i;
+      return 12;
+    } else {
+      return 8;
+    }
+  },
+  JRCn: function() {
+    var i = MMU.rb(regPC[0]);
+    if (i > 0x7F) i = -((~i + 1) & 0xFF);
+    regPC[0]++;
+    if (regF[0] & F_CARRY) {
+      regPC[0] += i;
+      return 12;
+    } else {
+      return 8;
+    }
+  },
 
-    DJNZn: function() {
-      var i = MMU.rb(regPC[0]);
-      if (i > 127) i = -((~i + 1) & 255);
-      regPC[0]++;
-      Z80._r.m = 2;
-      regB[0]--;
-      if (regB[0]) {
-        regPC[0] += i;
-        Z80._r.m++;
-      }
-    },
+  /**
+   * Stops processor and screen until button press
+   * Its instruction is different than z80, which gives 0x10 as DJNZ (decrements
+   * B and skips next instruction if B is zero).
+   * STOP
+   * @return int Clock ticks
+   */
+  stop: function() {
+    // TODO: set a 'stop' mode, that waits for a button press
+    // TODO: check if this instruction's overloaded to also change the CPU clock
+    // speed on GBC
+    return 0;
+  },
 
-    CALLnn: function() {
+  CALLnn: function() {
+    regSP[0] -= 2;
+    MMU.ww(regSP[0], regPC[0] + 2);
+    regPC[0] = MMU.rw(regPC[0]);
+    return 20;
+  },
+
+  CALLNZnn: function() {
+    if ((regF[0] & F_ZERO) === 0x00) {
       regSP[0] -= 2;
       MMU.ww(regSP[0], regPC[0] + 2);
       regPC[0] = MMU.rw(regPC[0]);
-      Z80._r.m = 5;
-    },
-    CALLNZnn: function() {
-      Z80._r.m = 3;
-      if ((regF[0] & 0x80) == 0x00) {
-        regSP[0] -= 2;
-        MMU.ww(regSP[0], regPC[0] + 2);
-        regPC[0] = MMU.rw(regPC[0]);
-        Z80._r.m += 2;
-      } else regPC[0] += 2;
-    },
-    CALLZnn: function() {
-      Z80._r.m = 3;
-      if ((regF[0] & 0x80) == 0x80) {
-        regSP[0] -= 2;
-        MMU.ww(regSP[0], regPC[0] + 2);
-        regPC[0] = MMU.rw(regPC[0]);
-        Z80._r.m += 2;
-      } else regPC[0] += 2;
-    },
-    CALLNCnn: function() {
-      Z80._r.m = 3;
-      if ((regF[0] & 0x10) == 0x00) {
-        regSP[0] -= 2;
-        MMU.ww(regSP[0], regPC[0] + 2);
-        regPC[0] = MMU.rw(regPC[0]);
-        Z80._r.m += 2;
-      } else regPC[0] += 2;
-    },
-    CALLCnn: function() {
-      Z80._r.m = 3;
-      if ((regF[0] & 0x10) == 0x10) {
-        regSP[0] -= 2;
-        MMU.ww(regSP[0], regPC[0] + 2);
-        regPC[0] = MMU.rw(regPC[0]);
-        Z80._r.m += 2;
-      } else regPC[0] += 2;
-    },
-
-    RET: function() {
-      regPC[0] = MMU.rw(regSP[0]);
-      regSP[0] += 2;
-      Z80._r.m = 3;
-    },
-    RETI: function() {
-      interruptsEnabled = true;
-      Z80._ops.rrs();
-      regPC[0] = MMU.rw(regSP[0]);
-      regSP[0] += 2;
-      Z80._r.m = 3;
-    },
-    RETNZ: function() {
-      Z80._r.m = 1;
-      if ((regF[0] & 0x80) == 0x00) {
-        regPC[0] = MMU.rw(regSP[0]);
-        regSP[0] += 2;
-        Z80._r.m += 2;
-      }
-    },
-    RETZ: function() {
-      Z80._r.m = 1;
-      if ((regF[0] & 0x80) == 0x80) {
-        regPC[0] = MMU.rw(regSP[0]);
-        regSP[0] += 2;
-        Z80._r.m += 2;
-      }
-    },
-    RETNC: function() {
-      Z80._r.m = 1;
-      if ((regF[0] & 0x10) == 0x00) {
-        regPC[0] = MMU.rw(regSP[0]);
-        regSP[0] += 2;
-        Z80._r.m += 2;
-      }
-    },
-    RETC: function() {
-      Z80._r.m = 1;
-      if ((regF[0] & 0x10) == 0x10) {
-        regPC[0] = MMU.rw(regSP[0]);
-        regSP[0] += 2;
-        Z80._r.m += 2;
-      }
-    },
-
-    RST00: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x00;
-      Z80._r.m = 3;
-    },
-    RST08: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x08;
-      Z80._r.m = 3;
-    },
-    RST10: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x10;
-      Z80._r.m = 3;
-    },
-    RST18: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x18;
-      Z80._r.m = 3;
-    },
-    RST20: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x20;
-      Z80._r.m = 3;
-    },
-    RST28: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x28;
-      Z80._r.m = 3;
-    },
-    RST30: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x30;
-      Z80._r.m = 3;
-    },
-    RST38: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x38;
-      Z80._r.m = 3;
-    },
-    RST40: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x40;
-      Z80._r.m = 3;
-    },
-    RST48: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x48;
-      Z80._r.m = 3;
-    },
-    RST50: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x50;
-      Z80._r.m = 3;
-    },
-    RST58: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x58;
-      Z80._r.m = 3;
-    },
-    RST60: function() {
-      Z80._ops.rsv();
-      regSP[0] -= 2;
-      MMU.ww(regSP[0], regPC[0]);
-      regPC[0] = 0x60;
-      Z80._r.m = 3;
-    },
-
-    NOP: function() {
-      Z80._r.m = 1;
-    },
-
-    HALT: function() {
-      if (interruptsEnabled) {
-        Z80._halt = true;
-      }
-      Z80._r.m = 1;
-    },
-
-    DI: function() {
-      interruptsEnabled = false;
-      Z80._r.m = 1;
-    },
-
-    // EI
-    // Enable Interrupts
-    // 0xFB
-    EI: function() {
-      interruptsEnabled = true;
-      Z80._r.m = 1;
-    },
-
-    /*--- Helper functions ---*/
-    rsv: function() {
-      // TODO: save registers
-    },
-
-    rrs: function() {
-      // TODO restore registers
-    },
-
-    MAPcb: function() {
-      var i = MMU.rb(regPC[0]);
-      regPC[0]++;
-      if (Z80._cbmap[i]) Z80._cbmap[i]();
-      else console.log(i);
-    },
-
-    XX: function(instruction) {
-      /*Undefined map entry*/
-      var opc = regPC[0] - 1;
-      LOG.out('Z80', 'Unimplemented map instruction ' + instruction + ' at $' + opc.toString(16) + ', stopping.');
-      Z80._stop = 1;
-    },
-
-    XY: function() {
-      /*Undefined cbmap entry*/
-      var opc = regPC[0] - 1;
-      LOG.out('Z80', 'Unimplemented cbmap instruction at $' + opc.toString(16) + ', stopping.');
-      Z80._stop = 1;
+      return 20;
+    } else {
+      regPC[0] += 2;
+      return 12;
     }
-
   },
-  _cbmap: []
+
+  CALLNCnn: function() {
+    if ((regF[0] & F_CARRY) === 0x00) {
+      regSP[0] -= 2;
+      MMU.ww(regSP[0], regPC[0] + 2);
+      regPC[0] = MMU.rw(regPC[0]);
+      return 20;
+    } else {
+      regPC[0] += 2;
+      return 12;
+    }
+  },
+
+  CALLCnn: function() {
+    if ((regF[0] & 0x10) == 0x10) {
+      regSP[0] -= 2;
+      MMU.ww(regSP[0], regPC[0] + 2);
+      regPC[0] = MMU.rw(regPC[0]);
+      return 20;
+    } else {
+      regPC[0] += 2;
+      return 12;
+    }
+  },
+
+  RET: function() {
+    regPC[0] = MMU.rw(regSP[0]);
+    regSP[0] += 2;
+    return 12;
+  },
+  RETI: function() {
+    interruptsEnabled = true;
+    _ops.rrs();
+    regPC[0] = MMU.rw(regSP[0]);
+    regSP[0] += 2;
+    return 12;
+  },
+  RETNZ: function() {
+    if ((regF[0] & F_ZERO) == 0x00) {
+      regPC[0] = MMU.rw(regSP[0]);
+      regSP[0] += 2;
+      return 12;
+    } else {
+      return 4;
+    }
+  },
+  RETZ: function() {
+    if (regF[0] & F_ZERO) {
+      regPC[0] = MMU.rw(regSP[0]);
+      regSP[0] += 2;
+      return 12;
+    } else {
+      return 4;
+    }
+  },
+  RETNC: function() {
+    if ((regF[0] & F_CARRY) == 0x00) {
+      regPC[0] = MMU.rw(regSP[0]);
+      regSP[0] += 2;
+      return 12;
+    } else {
+      return 4;
+    }
+  },
+  RETC: function() {
+    if ((regF[0] & F_CARRY) == 0x10) {
+      regPC[0] = MMU.rw(regSP[0]);
+      regSP[0] += 2;
+      return 12;
+    } else {
+      return 4;
+    }
+  },
+
+  /**
+   * Call routine set at address
+   * @param int addr Address of routine to run
+   * @return int Clock ticks
+   */
+  rst: function(addr) {
+    _ops.rsv();
+    regSP[0] -= 2;
+    MMU.ww(regSP[0], regPC[0]);
+    regPC[0] = addr;
+    return 12;
+  },
+
+  NOP: function() {
+    return 4;
+  },
+
+  HALT: function() {
+    if (interruptsEnabled) {
+      Z80._halt = true;
+    }
+    return 4;
+  },
+
+  DI: function() {
+    interruptsEnabled = false;
+    return 4;
+  },
+
+  // EI
+  // Enable Interrupts
+  // 0xFB
+  EI: function() {
+    interruptsEnabled = true;
+    return 4;
+  },
+
+  /*--- Helper functions ---*/
+  rsv: function() {
+    // TODO: save registers
+  },
+
+  rrs: function() {
+    // TODO restore registers
+  },
+
+  MAPcb: function() {
+    var i = MMU.rb(regPC[0]);
+    regPC[0]++;
+    if (_cbmap[i]) {
+      return _cbmap[i]();
+    } else {
+      console.log(i);
+      return 0;
+    }
+  },
+
+  XX: function(instruction) {
+    /*Undefined map entry*/
+    var opc = regPC[0] - 1;
+    LOG.out('Z80', 'Unimplemented instruction ' + instruction + ' at $' + opc.toString(16) + ', stopping.');
+    Z80._stop = 1;
+  }
 };
 
-Z80._map = [
+const _map = [
   // 00
-  Z80._ops.NOP, Z80._ops.LDBCnn, Z80._ops.LDBCmA, Z80._ops.INCBC,
-  Z80._ops.INCr_b, Z80._ops.DECr_b, Z80._ops.LDrn_b, Z80._ops.RLCA,
-  Z80._ops.LDmmSP, Z80._ops.ADDHLBC, Z80._ops.LDABCm, Z80._ops.DECBC,
-  Z80._ops.INCr_c, Z80._ops.DECr_c, Z80._ops.LDrn_c, Z80._ops.RRCA,
+  _ops.NOP, _ops.LDBCnn, _ops.LDBCmA, _ops.incReg16.bind(null, regBC),
+  _ops.incReg.bind(null, regB), _ops.decReg.bind(null, regB), _ops.ldRegVal.bind(null, regB), _ops.RLCA,
+  _ops.LDmmSP, _ops.addHLReg.bind(null, regBC), _ops.LDABCm, _ops.decReg16.bind(null, regBC),
+  _ops.incReg.bind(null, regC), _ops.decReg.bind(null, regC), _ops.ldRegVal.bind(null, regC), _ops.RRCA,
   // 10
-  Z80._ops.DJNZn, Z80._ops.LDDEnn, Z80._ops.LDDEmA, Z80._ops.INCDE,
-  Z80._ops.INCr_d, Z80._ops.DECr_d, Z80._ops.LDrn_d, Z80._ops.RLA,
-  Z80._ops.JRn, Z80._ops.ADDHLDE, Z80._ops.LDADEm, Z80._ops.DECDE,
-  Z80._ops.INCr_e, Z80._ops.DECr_e, Z80._ops.LDrn_e, Z80._ops.RRA,
+  _ops.stop, _ops.LDDEnn, _ops.LDDEmA, _ops.incReg16.bind(null, regDE),
+  _ops.incReg.bind(null, regD), _ops.decReg.bind(null, regD), _ops.ldRegVal.bind(null, regD), _ops.RLA,
+  _ops.JRn, _ops.addHLReg.bind(null, regDE), _ops.LDADEm, _ops.decReg16.bind(null, regDE),
+  _ops.incReg.bind(null, regE), _ops.decReg.bind(null, regE), _ops.ldRegVal.bind(null, regE), _ops.RRA,
   // 20
-  Z80._ops.JRNZn, Z80._ops.LDHLnn, Z80._ops.LDHLIA, Z80._ops.INCHL,
-  Z80._ops.INCr_h, Z80._ops.DECr_h, Z80._ops.LDrn_h, Z80._ops.DAA,
-  Z80._ops.JRZn, Z80._ops.ADDHLHL, Z80._ops.LDAHLI, Z80._ops.DECHL,
-  Z80._ops.INCr_l, Z80._ops.DECr_l, Z80._ops.LDrn_l, Z80._ops.CPL,
+  _ops.JRNZn, _ops.LDHLnn, _ops.LDHLIA, _ops.incReg16.bind(null, regHL),
+  _ops.incReg.bind(null, regH), _ops.decReg.bind(null, regH), _ops.ldRegVal.bind(null, regH), _ops.DAA,
+  _ops.JRZn, _ops.addHLReg.bind(null, regHL), _ops.LDAHLI, _ops.decReg16.bind(null, regHL),
+  _ops.incReg.bind(null, regL), _ops.decReg.bind(null, regL), _ops.ldRegVal.bind(null, regL), _ops.CPL,
   // 30
-  Z80._ops.JRNCn, Z80._ops.LDSPnn, Z80._ops.LDHLDA, Z80._ops.INCSP,
-  Z80._ops.INCHLm, Z80._ops.DECHLm, Z80._ops.LDHLmn, Z80._ops.SCF,
-  Z80._ops.JRCn, Z80._ops.ADDHLSP, Z80._ops.LDAHLD, Z80._ops.DECSP,
-  Z80._ops.INCr_a, Z80._ops.DECr_a, Z80._ops.LDrn_a, Z80._ops.CCF,
+  _ops.JRNCn, _ops.LDSPnn, _ops.LDHLDA, _ops.incReg16.bind(null, regSP),
+  _ops.INCHLm, _ops.DECHLm, _ops.LDHLmn, _ops.SCF,
+  _ops.JRCn, _ops.addHLReg.bind(null, regSP), _ops.LDAHLD, _ops.decReg16.bind(null, regSP),
+  _ops.incReg.bind(null, regA), _ops.decReg.bind(null, regA), _ops.ldRegVal.bind(null, regA), _ops.CCF,
   // 40
-  Z80._ops.ldReg.bind(null, regB, regB), Z80._ops.ldReg.bind(null, regB, regC), Z80._ops.ldReg.bind(null, regB, regD), Z80._ops.ldReg.bind(null, regB, regE),
-  Z80._ops.ldReg.bind(null, regB, regH), Z80._ops.ldReg.bind(null, regB, regL), Z80._ops.LDrHLm_b, Z80._ops.ldReg.bind(null, regB, regA),
-  Z80._ops.ldReg.bind(null, regC, regB), Z80._ops.ldReg.bind(null, regC, regC), Z80._ops.ldReg.bind(null, regC, regD), Z80._ops.ldReg.bind(null, regC, regE),
-  Z80._ops.ldReg.bind(null, regC, regH), Z80._ops.ldReg.bind(null, regC, regL), Z80._ops.LDrHLm_c, Z80._ops.ldReg.bind(null, regC, regA),
+  _ops.ldReg.bind(null, regB, regB), _ops.ldReg.bind(null, regB, regC), _ops.ldReg.bind(null, regB, regD), _ops.ldReg.bind(null, regB, regE),
+  _ops.ldReg.bind(null, regB, regH), _ops.ldReg.bind(null, regB, regL), _ops.ldRegMem.bind(null, regB), _ops.ldReg.bind(null, regB, regA),
+  _ops.ldReg.bind(null, regC, regB), _ops.ldReg.bind(null, regC, regC), _ops.ldReg.bind(null, regC, regD), _ops.ldReg.bind(null, regC, regE),
+  _ops.ldReg.bind(null, regC, regH), _ops.ldReg.bind(null, regC, regL), _ops.ldRegMem.bind(null, regC), _ops.ldReg.bind(null, regC, regA),
   // 50
-  Z80._ops.ldReg.bind(null, regD, regB), Z80._ops.ldReg.bind(null, regD, regC), Z80._ops.ldReg.bind(null, regD, regD), Z80._ops.ldReg.bind(null, regD, regE),
-  Z80._ops.ldReg.bind(null, regD, regH), Z80._ops.ldReg.bind(null, regD, regL), Z80._ops.LDrHLm_d, Z80._ops.ldReg.bind(null, regD, regA),
-  Z80._ops.ldReg.bind(null, regE, regB), Z80._ops.ldReg.bind(null, regE, regC), Z80._ops.ldReg.bind(null, regE, regD), Z80._ops.ldReg.bind(null, regE, regE),
-  Z80._ops.ldReg.bind(null, regE, regH), Z80._ops.ldReg.bind(null, regE, regL), Z80._ops.LDrHLm_e, Z80._ops.ldReg.bind(null, regE, regA),
+  _ops.ldReg.bind(null, regD, regB), _ops.ldReg.bind(null, regD, regC), _ops.ldReg.bind(null, regD, regD), _ops.ldReg.bind(null, regD, regE),
+  _ops.ldReg.bind(null, regD, regH), _ops.ldReg.bind(null, regD, regL), _ops.ldRegMem.bind(null, regD), _ops.ldReg.bind(null, regD, regA),
+  _ops.ldReg.bind(null, regE, regB), _ops.ldReg.bind(null, regE, regC), _ops.ldReg.bind(null, regE, regD), _ops.ldReg.bind(null, regE, regE),
+  _ops.ldReg.bind(null, regE, regH), _ops.ldReg.bind(null, regE, regL), _ops.ldRegMem.bind(null, regE), _ops.ldReg.bind(null, regE, regA),
   // 60
-  Z80._ops.ldReg.bind(null, regH, regB), Z80._ops.ldReg.bind(null, regH, regC), Z80._ops.ldReg.bind(null, regH, regD), Z80._ops.ldReg.bind(null, regH, regE),
-  Z80._ops.ldReg.bind(null, regH, regH), Z80._ops.ldReg.bind(null, regH, regL), Z80._ops.LDrHLm_h, Z80._ops.ldReg.bind(null, regH, regA),
-  Z80._ops.ldReg.bind(null, regL, regB), Z80._ops.ldReg.bind(null, regL, regC), Z80._ops.ldReg.bind(null, regL, regD), Z80._ops.ldReg.bind(null, regL, regE),
-  Z80._ops.ldReg.bind(null, regL, regH), Z80._ops.ldReg.bind(null, regL, regL), Z80._ops.LDrHLm_l, Z80._ops.ldReg.bind(null, regL, regA),
+  _ops.ldReg.bind(null, regH, regB), _ops.ldReg.bind(null, regH, regC), _ops.ldReg.bind(null, regH, regD), _ops.ldReg.bind(null, regH, regE),
+  _ops.ldReg.bind(null, regH, regH), _ops.ldReg.bind(null, regH, regL), _ops.ldRegMem.bind(null, regH), _ops.ldReg.bind(null, regH, regA),
+  _ops.ldReg.bind(null, regL, regB), _ops.ldReg.bind(null, regL, regC), _ops.ldReg.bind(null, regL, regD), _ops.ldReg.bind(null, regL, regE),
+  _ops.ldReg.bind(null, regL, regH), _ops.ldReg.bind(null, regL, regL), _ops.ldRegMem.bind(null, regL), _ops.ldReg.bind(null, regL, regA),
   // 70
-  Z80._ops.LDHLmr_b, Z80._ops.LDHLmr_c, Z80._ops.LDHLmr_d, Z80._ops.LDHLmr_e,
-  Z80._ops.LDHLmr_h, Z80._ops.LDHLmr_l, Z80._ops.HALT, Z80._ops.LDHLmr_a,
-  Z80._ops.ldReg.bind(null, regA, regB), Z80._ops.ldReg.bind(null, regA, regC), Z80._ops.ldReg.bind(null, regA, regD), Z80._ops.ldReg.bind(null, regA, regE),
-  Z80._ops.ldReg.bind(null, regA, regH), Z80._ops.ldReg.bind(null, regA, regL), Z80._ops.LDrHLm_a, Z80._ops.ldReg.bind(null, regA, regA),
+  _ops.ldMemReg.bind(null, regB), _ops.ldMemReg.bind(null, regC), _ops.ldMemReg.bind(null, regD), _ops.ldMemReg.bind(null, regE),
+  _ops.ldMemReg.bind(null, regH), _ops.ldMemReg.bind(null, regL), _ops.HALT, _ops.ldMemReg.bind(null, regA),
+  _ops.ldReg.bind(null, regA, regB), _ops.ldReg.bind(null, regA, regC), _ops.ldReg.bind(null, regA, regD), _ops.ldReg.bind(null, regA, regE),
+  _ops.ldReg.bind(null, regA, regH), _ops.ldReg.bind(null, regA, regL), _ops.ldRegMem.bind(null, regA), _ops.ldReg.bind(null, regA, regA),
   // 80
-  Z80._ops.addReg.bind(null, regB), Z80._ops.addReg.bind(null, regC), Z80._ops.addReg.bind(null, regD), Z80._ops.addReg.bind(null, regE),
-  Z80._ops.addReg.bind(null, regH), Z80._ops.addReg.bind(null, regL), Z80._ops.ADDHL, Z80._ops.addReg.bind(null, regA), //FIXME: optimize with << 1
-  Z80._ops.ADCr_b, Z80._ops.ADCr_c, Z80._ops.ADCr_d, Z80._ops.ADCr_e,
-  Z80._ops.ADCr_h, Z80._ops.ADCr_l, Z80._ops.ADCHL, Z80._ops.ADCr_a,
+  _ops.addReg.bind(null, regB), _ops.addReg.bind(null, regC), _ops.addReg.bind(null, regD), _ops.addReg.bind(null, regE),
+  _ops.addReg.bind(null, regH), _ops.addReg.bind(null, regL), _ops.ADDHL, _ops.addReg.bind(null, regA), //FIXME: optimize with << 1
+  _ops.adcReg.bind(null, regB), _ops.adcReg.bind(null, regC), _ops.adcReg.bind(null, regD), _ops.adcReg.bind(null, regE),
+  _ops.adcReg.bind(null, regH), _ops.adcReg.bind(null, regL), _ops.ADCHL, _ops.adcReg.bind(null, regA),
   // 90
-  Z80._ops.subReg.bind(null, regB), Z80._ops.subReg.bind(null, regC), Z80._ops.subReg.bind(null, regD), Z80._ops.subReg.bind(null, regE),
-  Z80._ops.subReg.bind(null, regH), Z80._ops.subReg.bind(null, regL), Z80._ops.SUBHL, Z80._ops.subReg.bind(null, regA), // FIXME: SUB A, A could be optimized as a NOP
-  Z80._ops.subcReg.bind(null, regB), Z80._ops.subcReg.bind(null, regC), Z80._ops.subcReg.bind(null, regD), Z80._ops.subcReg.bind(null, regE),
-  Z80._ops.subcReg_h, Z80._ops.subcReg_l, Z80._ops.SBCHL, Z80._ops.subcReg_a,
+  _ops.subReg.bind(null, regB), _ops.subReg.bind(null, regC), _ops.subReg.bind(null, regD), _ops.subReg.bind(null, regE),
+  _ops.subReg.bind(null, regH), _ops.subReg.bind(null, regL), _ops.SUBHL, _ops.subReg.bind(null, regA), // FIXME: SUB A, A could be optimized as a NOP
+  _ops.subcReg.bind(null, regB), _ops.subcReg.bind(null, regC), _ops.subcReg.bind(null, regD), _ops.subcReg.bind(null, regE),
+  _ops.subcReg.bind(null, regH), _ops.subcReg.bind(null, regL), _ops.SBCHL, _ops.subcReg.bind(null, regA),
   // A0
-  Z80._ops.ANDr_b, Z80._ops.ANDr_c, Z80._ops.ANDr_d, Z80._ops.ANDr_e,
-  Z80._ops.ANDr_h, Z80._ops.ANDr_l, Z80._ops.ANDHL, Z80._ops.ANDr_a,
-  Z80._ops.XORr_b, Z80._ops.XORr_c, Z80._ops.XORr_d, Z80._ops.XORr_e,
-  Z80._ops.XORr_h, Z80._ops.XORr_l, Z80._ops.XORHL, Z80._ops.XORr_a,
+  _ops.andReg.bind(null, regB), _ops.andReg.bind(null, regC), _ops.andReg.bind(null, regD), _ops.andReg.bind(null, regE),
+  _ops.andReg.bind(null, regH), _ops.andReg.bind(null, regL), _ops.ANDHL, _ops.andReg.bind(null, regA),
+  _ops.xorReg.bind(null, regB), _ops.xorReg.bind(null, regC), _ops.xorReg.bind(null, regD), _ops.xorReg.bind(null, regE),
+  _ops.xorReg.bind(null, regH), _ops.xorReg.bind(null, regL), _ops.XORHL, _ops.xorReg.bind(null, regA),
   // B0
-  Z80._ops.ORr_b, Z80._ops.ORr_c, Z80._ops.ORr_d, Z80._ops.ORr_e,
-  Z80._ops.ORr_h, Z80._ops.ORr_l, Z80._ops.ORHL, Z80._ops.ORr_a,
-  Z80._ops.cpReg.bind(null, regB), Z80._ops.cpReg.bind(null, regC), Z80._ops.cpReg.bind(null, regD), Z80._ops.cpReg.bind(null, regE),
-  Z80._ops.cpReg.bind(null, regH), Z80._ops.cpReg.bind(null, regL), Z80._ops.CPHL, Z80._ops.cpReg.bind(null, regA),
+  _ops.orReg.bind(null, regB), _ops.orReg.bind(null, regC), _ops.orReg.bind(null, regD), _ops.orReg.bind(null, regE),
+  _ops.orReg.bind(null, regH), _ops.orReg.bind(null, regL), _ops.ORHL, _ops.orReg.bind(null, regA),
+  _ops.cpReg.bind(null, regB), _ops.cpReg.bind(null, regC), _ops.cpReg.bind(null, regD), _ops.cpReg.bind(null, regE),
+  _ops.cpReg.bind(null, regH), _ops.cpReg.bind(null, regL), _ops.CPHL, _ops.cpReg.bind(null, regA),
   // C0
-  Z80._ops.RETNZ, Z80._ops.POPBC, Z80._ops.JPNZnn, Z80._ops.JPnn,
-  Z80._ops.CALLNZnn, Z80._ops.PUSHBC, Z80._ops.ADDn, Z80._ops.RST00,
-  Z80._ops.RETZ, Z80._ops.RET, Z80._ops.JPZnn, Z80._ops.MAPcb,
-  Z80._ops.CALLZnn, Z80._ops.CALLnn, Z80._ops.ADCn, Z80._ops.RST08,
+  _ops.RETNZ, _ops.POPBC, _ops.JPNZnn, _ops.JPnn,
+  _ops.CALLNZnn, _ops.PUSHBC, _ops.ADDn, _ops.rst.bind(null, 0x00),
+  _ops.RETZ, _ops.RET, _ops.JPZnn, _ops.MAPcb,
+  _ops.CALLZnn, _ops.CALLnn, _ops.ADCn, _ops.rst.bind(null, 0x08),
   // D0
-  Z80._ops.RETNC, Z80._ops.POPDE, Z80._ops.JPNCnn, Z80._ops.XX.bind(null, 'D3'),
-  Z80._ops.CALLNCnn, Z80._ops.PUSHDE, Z80._ops.SUBn, Z80._ops.RST10,
-  Z80._ops.RETC, Z80._ops.RETI, Z80._ops.JPCnn, Z80._ops.XX.bind(null, 'DB'),
-  Z80._ops.CALLCnn, Z80._ops.XX.bind(null, 'DD'), Z80._ops.SBCn, Z80._ops.RST18,
+  _ops.RETNC, _ops.POPDE, _ops.JPNCnn, _ops.XX.bind(null, 'D3'),
+  _ops.CALLNCnn, _ops.PUSHDE, _ops.SUBn, _ops.rst.bind(null, 0x10),
+  _ops.RETC, _ops.RETI, _ops.JPCnn, _ops.XX.bind(null, 'DB'),
+  _ops.CALLCnn, _ops.XX.bind(null, 'DD'), _ops.SBCn, _ops.rst.bind(null, 0x18),
   // E0
-  Z80._ops.LDIOnA, Z80._ops.POPHL, Z80._ops.LDIOCA, Z80._ops.XX.bind(null, 'E3'),
-  Z80._ops.XX.bind(null, 'E4'), Z80._ops.PUSHHL, Z80._ops.ANDn, Z80._ops.RST20,
-  Z80._ops.ADDSPn, Z80._ops.JPHL, Z80._ops.LDmmA, Z80._ops.XX.bind(null, 'EB'),
-  Z80._ops.XX.bind(null, 'EC'), Z80._ops.XX.bind(null, 'ED'), Z80._ops.XORn, Z80._ops.RST28,
+  _ops.LDIOnA, _ops.POPHL, _ops.LDIOCA, _ops.XX.bind(null, 'E3'),
+  _ops.XX.bind(null, 'E4'), _ops.PUSHHL, _ops.ANDn, _ops.rst.bind(null, 0x20),
+  _ops.ADDSPn, _ops.JPHL, _ops.LDmmA, _ops.XX.bind(null, 'EB'),
+  _ops.XX.bind(null, 'EC'), _ops.XX.bind(null, 'ED'), _ops.XORn, _ops.rst.bind(null, 0x28),
   // F0
-  Z80._ops.LDAIOn, Z80._ops.POPAF, Z80._ops.LDAIOC, Z80._ops.DI,
-  Z80._ops.XX.bind(null, 'F4'), Z80._ops.PUSHAF, Z80._ops.ORn, Z80._ops.RST30,
-  Z80._ops.LDHLSPn, Z80._ops.LDSPHL, Z80._ops.LDAmm, Z80._ops.EI,
-  Z80._ops.XX.bind(null, 'FC'), Z80._ops.XX.bind(null, 'FD'), Z80._ops.CPn, Z80._ops.RST38
+  _ops.LDAIOn, _ops.POPAF, _ops.LDAIOC, _ops.DI,
+  _ops.XX.bind(null, 'F4'), _ops.PUSHAF, _ops.ORn, _ops.rst.bind(null, 0x30),
+  _ops.LDHLSPn, _ops.LDSPHL, _ops.LDAmm, _ops.EI,
+  _ops.XX.bind(null, 'FC'), _ops.XX.bind(null, 'FD'), _ops.CPn, _ops.rst.bind(null, 0x38)
 ];
 
-Z80._cbmap = [
+const _cbmap = [
   // CB00
-  Z80._ops.RLCr_b, Z80._ops.RLCr_c, Z80._ops.RLCr_d, Z80._ops.RLCr_e,
-  Z80._ops.RLCr_h, Z80._ops.RLCr_l, Z80._ops.RLCHL, Z80._ops.RLCr_a,
-  Z80._ops.RRCr_b, Z80._ops.RRCr_c, Z80._ops.RRCr_d, Z80._ops.RRCr_e,
-  Z80._ops.RRCr_h, Z80._ops.RRCr_l, Z80._ops.RRCHL, Z80._ops.RRCr_a,
+  _ops.rlcReg.bind(null, regB), _ops.rlcReg.bind(null, regC), _ops.rlcReg.bind(null, regD), _ops.rlcReg.bind(null, regE),
+  _ops.rlcReg.bind(null, regH), _ops.rlcReg.bind(null, regL), _ops.RLCHL, _ops.rlcReg.bind(null, regA),
+  _ops.rrcReg.bind(null, regB), _ops.rrcReg.bind(null, regC), _ops.rrcReg.bind(null, regD), _ops.rrcReg.bind(null, regE),
+  _ops.rrcReg.bind(null, regH), _ops.rrcReg.bind(null, regL), _ops.RRCHL, _ops.rrcReg.bind(null, regA),
   // CB10
-  Z80._ops.RLr_b, Z80._ops.RLr_c, Z80._ops.RLr_d, Z80._ops.RLr_e,
-  Z80._ops.RLr_h, Z80._ops.RLr_l, Z80._ops.RLHL, Z80._ops.RLr_a,
-  Z80._ops.RRr_b, Z80._ops.RRr_c, Z80._ops.RRr_d, Z80._ops.RRr_e,
-  Z80._ops.RRr_h, Z80._ops.RRr_l, Z80._ops.RRHL, Z80._ops.RRr_a,
+  _ops.rlReg.bind(null, regB), _ops.rlReg.bind(null, regC), _ops.rlReg.bind(null, regD), _ops.rlReg.bind(null, regE),
+  _ops.rlReg.bind(null, regH), _ops.rlReg.bind(null, regL), _ops.RLHL, _ops.rlReg.bind(null, regA),
+  _ops.rrReg.bind(null, regB), _ops.rrReg.bind(null, regC), _ops.rrReg.bind(null, regD), _ops.rrReg.bind(null, regE),
+  _ops.rrReg.bind(null, regH), _ops.rrReg.bind(null, regL), _ops.RRHL, _ops.rrReg.bind(null, regA),
   // CB20
-  Z80._ops.SLAr_b, Z80._ops.SLAr_c, Z80._ops.SLAr_d, Z80._ops.SLAr_e,
-  Z80._ops.SLAr_h, Z80._ops.SLAr_l, Z80._ops.XY, Z80._ops.SLAr_a,
-  Z80._ops.SRAr_b, Z80._ops.SRAr_c, Z80._ops.SRAr_d, Z80._ops.SRAr_e,
-  Z80._ops.SRAr_h, Z80._ops.SRAr_l, Z80._ops.XY, Z80._ops.SRAr_a,
+  _ops.slaReg.bind(null, regB), _ops.slaReg.bind(null, regC), _ops.slaReg.bind(null, regD), _ops.slaReg.bind(null, regE),
+  _ops.slaReg.bind(null, regH), _ops.slaReg.bind(null, regL), _ops.slaMem, _ops.slaReg.bind(null, regA),
+  _ops.sraReg.bind(null, regB), _ops.sraReg.bind(null, regC), _ops.sraReg.bind(null, regD), _ops.sraReg.bind(null, regE),
+  _ops.sraReg.bind(null, regH), _ops.sraReg.bind(null, regL), _ops.sraMem, _ops.sraReg.bind(null, regA),
   // CB30
-  Z80._ops.SWAPr_b, Z80._ops.SWAPr_c, Z80._ops.SWAPr_d, Z80._ops.SWAPr_e,
-  Z80._ops.SWAPr_h, Z80._ops.SWAPr_l, Z80._ops.XY, Z80._ops.SWAPr_a,
-  Z80._ops.SRLr_b, Z80._ops.SRLr_c, Z80._ops.SRLr_d, Z80._ops.SRLr_e,
-  Z80._ops.SRLr_h, Z80._ops.SRLr_l, Z80._ops.XY, Z80._ops.SRLr_a,
+  _ops.swapNibbles.bind(null, regB), _ops.swapNibbles.bind(null, regC), _ops.swapNibbles.bind(null, regD), _ops.swapNibbles.bind(null, regE),
+  _ops.swapNibbles.bind(null, regH), _ops.swapNibbles.bind(null, regL), _ops.swapNibblesMem, _ops.swapNibbles.bind(null, regA),
+  _ops.srlReg.bind(null, regB), _ops.srlReg.bind(null, regC), _ops.srlReg.bind(null, regD), _ops.srlReg.bind(null, regE),
+  _ops.srlReg.bind(null, regH), _ops.srlReg.bind(null, regL), _ops.srlMem, _ops.srlReg.bind(null, regA),
   // CB40
-  Z80._ops.BIT0b, Z80._ops.BIT0c, Z80._ops.BIT0d, Z80._ops.BIT0e,
-  Z80._ops.BIT0h, Z80._ops.BIT0l, Z80._ops.BIT0m, Z80._ops.BIT0a,
-  Z80._ops.BIT1b, Z80._ops.BIT1c, Z80._ops.BIT1d, Z80._ops.BIT1e,
-  Z80._ops.BIT1h, Z80._ops.BIT1l, Z80._ops.BIT1m, Z80._ops.BIT1a,
+  _ops.bitReg.bind(null, 0x01, regB), _ops.bitReg.bind(null, 0x01, regC), _ops.bitReg.bind(null, 0x01, regD), _ops.bitReg.bind(null, 0x01, regE),
+  _ops.bitReg.bind(null, 0x01, regH), _ops.bitReg.bind(null, 0x01, regL), _ops.bitMem.bind(null, 0x01), _ops.bitReg.bind(null, 0x01, regA),
+  _ops.bitReg.bind(null, 0x02, regB), _ops.bitReg.bind(null, 0x02, regC), _ops.bitReg.bind(null, 0x02, regD), _ops.bitReg.bind(null, 0x02, regE),
+  _ops.bitReg.bind(null, 0x02, regH), _ops.bitReg.bind(null, 0x02, regL), _ops.bitMem.bind(null, 0x02), _ops.bitReg.bind(null, 0x02, regA),
   // CB50
-  Z80._ops.BIT2b, Z80._ops.BIT2c, Z80._ops.BIT2d, Z80._ops.BIT2e,
-  Z80._ops.BIT2h, Z80._ops.BIT2l, Z80._ops.BIT2m, Z80._ops.BIT2a,
-  Z80._ops.BIT3b, Z80._ops.BIT3c, Z80._ops.BIT3d, Z80._ops.BIT3e,
-  Z80._ops.BIT3h, Z80._ops.BIT3l, Z80._ops.BIT3m, Z80._ops.BIT3a,
+  _ops.bitReg.bind(null, 0x04, regB), _ops.bitReg.bind(null, 0x04, regC), _ops.bitReg.bind(null, 0x04, regD), _ops.bitReg.bind(null, 0x04, regE),
+  _ops.bitReg.bind(null, 0x04, regH), _ops.bitReg.bind(null, 0x04, regL), _ops.bitMem.bind(null, 0x04), _ops.bitReg.bind(null, 0x04, regA),
+  _ops.bitReg.bind(null, 0x08, regB), _ops.bitReg.bind(null, 0x08, regC), _ops.bitReg.bind(null, 0x08, regD), _ops.bitReg.bind(null, 0x08, regE),
+  _ops.bitReg.bind(null, 0x08, regH), _ops.bitReg.bind(null, 0x08, regL), _ops.bitMem.bind(null, 0x08), _ops.bitReg.bind(null, 0x08, regA),
   // CB60
-  Z80._ops.BIT4b, Z80._ops.BIT4c, Z80._ops.BIT4d, Z80._ops.BIT4e,
-  Z80._ops.BIT4h, Z80._ops.BIT4l, Z80._ops.BIT4m, Z80._ops.BIT4a,
-  Z80._ops.BIT5b, Z80._ops.BIT5c, Z80._ops.BIT5d, Z80._ops.BIT5e,
-  Z80._ops.BIT5h, Z80._ops.BIT5l, Z80._ops.BIT5m, Z80._ops.BIT5a,
+  _ops.bitReg.bind(null, 0x10, regB), _ops.bitReg.bind(null, 0x10, regC), _ops.bitReg.bind(null, 0x10, regD), _ops.bitReg.bind(null, 0x10, regE),
+  _ops.bitReg.bind(null, 0x10, regH), _ops.bitReg.bind(null, 0x10, regL), _ops.bitMem.bind(null, 0x10), _ops.bitReg.bind(null, 0x10, regA),
+  _ops.bitReg.bind(null, 0x20, regB), _ops.bitReg.bind(null, 0x20, regC), _ops.bitReg.bind(null, 0x20, regD), _ops.bitReg.bind(null, 0x20, regE),
+  _ops.bitReg.bind(null, 0x20, regH), _ops.bitReg.bind(null, 0x20, regL), _ops.bitMem.bind(null, 0x20), _ops.bitReg.bind(null, 0x20, regA),
   // CB70
-  Z80._ops.BIT6b, Z80._ops.BIT6c, Z80._ops.BIT6d, Z80._ops.BIT6e,
-  Z80._ops.BIT6h, Z80._ops.BIT6l, Z80._ops.BIT6m, Z80._ops.BIT6a,
-  Z80._ops.BIT7b, Z80._ops.BIT7c, Z80._ops.BIT7d, Z80._ops.BIT7e,
-  Z80._ops.BIT7h, Z80._ops.BIT7l, Z80._ops.BIT7m, Z80._ops.BIT7a,
+  _ops.bitReg.bind(null, 0x40, regB), _ops.bitReg.bind(null, 0x40, regC), _ops.bitReg.bind(null, 0x40, regD), _ops.bitReg.bind(null, 0x40, regE),
+  _ops.bitReg.bind(null, 0x40, regH), _ops.bitReg.bind(null, 0x40, regL), _ops.bitMem.bind(null, 0x40), _ops.bitReg.bind(null, 0x40, regA),
+  _ops.bitReg.bind(null, 0x80, regB), _ops.bitReg.bind(null, 0x80, regC), _ops.bitReg.bind(null, 0x80, regD), _ops.bitReg.bind(null, 0x80, regE),
+  _ops.bitReg.bind(null, 0x80, regH), _ops.bitReg.bind(null, 0x80, regL), _ops.bitMem.bind(null, 0x80), _ops.bitReg.bind(null, 0x80, regA),
   // CB80
-  Z80._ops.RES0b, Z80._ops.RES0c, Z80._ops.RES0d, Z80._ops.RES0e,
-  Z80._ops.RES0h, Z80._ops.RES0l, Z80._ops.RES0m, Z80._ops.RES0a,
-  Z80._ops.RES1b, Z80._ops.RES1c, Z80._ops.RES1d, Z80._ops.RES1e,
-  Z80._ops.RES1h, Z80._ops.RES1l, Z80._ops.RES1m, Z80._ops.RES1a,
+  _ops.resReg.bind(null, 0x01, regB), _ops.resReg.bind(null, 0x01, regC), _ops.resReg.bind(null, 0x01, regD), _ops.resReg.bind(null, 0x01, regE),
+  _ops.resReg.bind(null, 0x01, regH), _ops.resReg.bind(null, 0x01, regL), _ops.resMem.bind(null, 0x01), _ops.resReg.bind(null, 0x01, regA),
+  _ops.resReg.bind(null, 0x02, regB), _ops.resReg.bind(null, 0x02, regC), _ops.resReg.bind(null, 0x02, regD), _ops.resReg.bind(null, 0x02, regE),
+  _ops.resReg.bind(null, 0x02, regH), _ops.resReg.bind(null, 0x02, regL), _ops.resMem.bind(null, 0x02), _ops.resReg.bind(null, 0x02, regA),
   // CB90
-  Z80._ops.RES2b, Z80._ops.RES2c, Z80._ops.RES2d, Z80._ops.RES2e,
-  Z80._ops.RES2h, Z80._ops.RES2l, Z80._ops.RES2m, Z80._ops.RES2a,
-  Z80._ops.RES3b, Z80._ops.RES3c, Z80._ops.RES3d, Z80._ops.RES3e,
-  Z80._ops.RES3h, Z80._ops.RES3l, Z80._ops.RES3m, Z80._ops.RES3a,
+  _ops.resReg.bind(null, 0x04, regB), _ops.resReg.bind(null, 0x04, regC), _ops.resReg.bind(null, 0x04, regD), _ops.resReg.bind(null, 0x04, regE),
+  _ops.resReg.bind(null, 0x04, regH), _ops.resReg.bind(null, 0x04, regL), _ops.resMem.bind(null, 0x04), _ops.resReg.bind(null, 0x04, regA),
+  _ops.resReg.bind(null, 0x08, regB), _ops.resReg.bind(null, 0x08, regC), _ops.resReg.bind(null, 0x08, regD), _ops.resReg.bind(null, 0x08, regE),
+  _ops.resReg.bind(null, 0x08, regH), _ops.resReg.bind(null, 0x08, regL), _ops.resMem.bind(null, 0x08), _ops.resReg.bind(null, 0x08, regA),
   // CBA0
-  Z80._ops.RES4b, Z80._ops.RES4c, Z80._ops.RES4d, Z80._ops.RES4e,
-  Z80._ops.RES4h, Z80._ops.RES4l, Z80._ops.RES4m, Z80._ops.RES4a,
-  Z80._ops.RES5b, Z80._ops.RES5c, Z80._ops.RES5d, Z80._ops.RES5e,
-  Z80._ops.RES5h, Z80._ops.RES5l, Z80._ops.RES5m, Z80._ops.RES5a,
+  _ops.resReg.bind(null, 0x10, regB), _ops.resReg.bind(null, 0x10, regC), _ops.resReg.bind(null, 0x10, regD), _ops.resReg.bind(null, 0x10, regE),
+  _ops.resReg.bind(null, 0x10, regH), _ops.resReg.bind(null, 0x10, regL), _ops.resMem.bind(null, 0x10), _ops.resReg.bind(null, 0x10, regA),
+  _ops.resReg.bind(null, 0x20, regB), _ops.resReg.bind(null, 0x20, regC), _ops.resReg.bind(null, 0x20, regD), _ops.resReg.bind(null, 0x20, regE),
+  _ops.resReg.bind(null, 0x20, regH), _ops.resReg.bind(null, 0x20, regL), _ops.resMem.bind(null, 0x20), _ops.resReg.bind(null, 0x20, regA),
   // CBB0
-  Z80._ops.RES6b, Z80._ops.RES6c, Z80._ops.RES6d, Z80._ops.RES6e,
-  Z80._ops.RES6h, Z80._ops.RES6l, Z80._ops.RES6m, Z80._ops.RES6a,
-  Z80._ops.RES7b, Z80._ops.RES7c, Z80._ops.RES7d, Z80._ops.RES7e,
-  Z80._ops.RES7h, Z80._ops.RES7l, Z80._ops.RES7m, Z80._ops.RES7a,
+  _ops.resReg.bind(null, 0x40, regB), _ops.resReg.bind(null, 0x40, regC), _ops.resReg.bind(null, 0x40, regD), _ops.resReg.bind(null, 0x40, regE),
+  _ops.resReg.bind(null, 0x40, regH), _ops.resReg.bind(null, 0x40, regL), _ops.resMem.bind(null, 0x40), _ops.resReg.bind(null, 0x40, regA),
+  _ops.resReg.bind(null, 0x80, regB), _ops.resReg.bind(null, 0x80, regC), _ops.resReg.bind(null, 0x80, regD), _ops.resReg.bind(null, 0x80, regE),
+  _ops.resReg.bind(null, 0x80, regH), _ops.resReg.bind(null, 0x80, regL), _ops.resMem.bind(null, 0x80), _ops.resReg.bind(null, 0x80, regA),
   // CBC0
-  Z80._ops.SET0b, Z80._ops.SET0c, Z80._ops.SET0d, Z80._ops.SET0e,
-  Z80._ops.SET0h, Z80._ops.SET0l, Z80._ops.SET0m, Z80._ops.SET0a,
-  Z80._ops.SET1b, Z80._ops.SET1c, Z80._ops.SET1d, Z80._ops.SET1e,
-  Z80._ops.SET1h, Z80._ops.SET1l, Z80._ops.SET1m, Z80._ops.SET1a,
+  _ops.setReg.bind(null, 0x01, regB), _ops.setReg.bind(null, 0x01, regC), _ops.setReg.bind(null, 0x01, regD), _ops.setReg.bind(null, 0x01, regE),
+  _ops.setReg.bind(null, 0x01, regH), _ops.setReg.bind(null, 0x01, regL), _ops.setMem.bind(null, 0x01), _ops.setReg.bind(null, 0x01, regA),
+  _ops.setReg.bind(null, 0x02, regB), _ops.setReg.bind(null, 0x02, regC), _ops.setReg.bind(null, 0x02, regD), _ops.setReg.bind(null, 0x02, regE),
+  _ops.setReg.bind(null, 0x02, regH), _ops.setReg.bind(null, 0x02, regL), _ops.setMem.bind(null, 0x02), _ops.setReg.bind(null, 0x02, regA),
   // CBD0
-  Z80._ops.SET2b, Z80._ops.SET2c, Z80._ops.SET2d, Z80._ops.SET2e,
-  Z80._ops.SET2h, Z80._ops.SET2l, Z80._ops.SET2m, Z80._ops.SET2a,
-  Z80._ops.SET3b, Z80._ops.SET3c, Z80._ops.SET3d, Z80._ops.SET3e,
-  Z80._ops.SET3h, Z80._ops.SET3l, Z80._ops.SET3m, Z80._ops.SET3a,
+  _ops.setReg.bind(null, 0x04, regB), _ops.setReg.bind(null, 0x04, regC), _ops.setReg.bind(null, 0x04, regD), _ops.setReg.bind(null, 0x04, regE),
+  _ops.setReg.bind(null, 0x04, regH), _ops.setReg.bind(null, 0x04, regL), _ops.setMem.bind(null, 0x04), _ops.setReg.bind(null, 0x04, regA),
+  _ops.setReg.bind(null, 0x08, regB), _ops.setReg.bind(null, 0x08, regC), _ops.setReg.bind(null, 0x08, regD), _ops.setReg.bind(null, 0x08, regE),
+  _ops.setReg.bind(null, 0x08, regH), _ops.setReg.bind(null, 0x08, regL), _ops.setMem.bind(null, 0x08), _ops.setReg.bind(null, 0x08, regA),
   // CBE0
-  Z80._ops.SET4b, Z80._ops.SET4c, Z80._ops.SET4d, Z80._ops.SET4e,
-  Z80._ops.SET4h, Z80._ops.SET4l, Z80._ops.SET4m, Z80._ops.SET4a,
-  Z80._ops.SET5b, Z80._ops.SET5c, Z80._ops.SET5d, Z80._ops.SET5e,
-  Z80._ops.SET5h, Z80._ops.SET5l, Z80._ops.SET5m, Z80._ops.SET5a,
+  _ops.setReg.bind(null, 0x10, regB), _ops.setReg.bind(null, 0x10, regC), _ops.setReg.bind(null, 0x10, regD), _ops.setReg.bind(null, 0x10, regE),
+  _ops.setReg.bind(null, 0x10, regH), _ops.setReg.bind(null, 0x10, regL), _ops.setMem.bind(null, 0x10), _ops.setReg.bind(null, 0x10, regA),
+  _ops.setReg.bind(null, 0x20, regB), _ops.setReg.bind(null, 0x20, regC), _ops.setReg.bind(null, 0x20, regD), _ops.setReg.bind(null, 0x20, regE),
+  _ops.setReg.bind(null, 0x20, regH), _ops.setReg.bind(null, 0x20, regL), _ops.setMem.bind(null, 0x20), _ops.setReg.bind(null, 0x20, regA),
   // CBF0
-  Z80._ops.SET6b, Z80._ops.SET6c, Z80._ops.SET6d, Z80._ops.SET6e,
-  Z80._ops.SET6h, Z80._ops.SET6l, Z80._ops.SET6m, Z80._ops.SET6a,
-  Z80._ops.SET7b, Z80._ops.SET7c, Z80._ops.SET7d, Z80._ops.SET7e,
-  Z80._ops.SET7h, Z80._ops.SET7l, Z80._ops.SET7m, Z80._ops.SET7a,
+  _ops.setReg.bind(null, 0x40, regB), _ops.setReg.bind(null, 0x40, regC), _ops.setReg.bind(null, 0x40, regD), _ops.setReg.bind(null, 0x40, regE),
+  _ops.setReg.bind(null, 0x40, regH), _ops.setReg.bind(null, 0x40, regL), _ops.setMem.bind(null, 0x40), _ops.setReg.bind(null, 0x40, regA),
+  _ops.setReg.bind(null, 0x80, regB), _ops.setReg.bind(null, 0x80, regC), _ops.setReg.bind(null, 0x80, regD), _ops.setReg.bind(null, 0x80, regE),
+  _ops.setReg.bind(null, 0x80, regH), _ops.setReg.bind(null, 0x80, regL), _ops.setMem.bind(null, 0x80), _ops.setReg.bind(null, 0x80, regA),
 ];
 
 export default Z80;
