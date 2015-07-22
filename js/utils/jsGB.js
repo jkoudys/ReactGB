@@ -1,11 +1,10 @@
 import GPU from './emulator/gpu.js';
 import MMU from './emulator/mmu.js';
 import LOG from './emulator/log.js';
-import KEY from './emulator/key.js';
+import Keypad from './emulator/Keypad.js';
 import Timer from './emulator/Timer.js';
 import Z80 from './emulator/z80.js';
 import tabMagic from './emulator/tabs.js';
-import BinFileReader from './emulator/fileread.js';
 
 var _frameCounter = {start: 0, frames: 0};
 
@@ -20,7 +19,7 @@ const jsGB = {
   frame: function() {
     // A separate 'frame clock', so we can run multiple z80 cycles per
     // frame we update to the canvas.
-    var fclock = Z80.speed * fps;
+    var fclock = Z80.speed / fps;
     var clockTicks = 0;
     var brk = document.getElementById('breakpoint').value;
     var opTicks = 0;
@@ -83,7 +82,7 @@ const jsGB = {
     GPU.reset();
     MMU.reset();
     Z80.reset();
-    KEY.reset();
+    Keypad.reset();
     Timer.reset();
     MMU._inbios = 0;
 
@@ -97,7 +96,7 @@ const jsGB = {
     document.getElementById('tilepixels').innerHTML = '';
     var tp = document.createElement('div');
     var x;
-    for (var i = 0; i < 64; i++) {
+    for (var i = 0; i < 0x30; i++) {
       document.getElementById('tilepixels').appendChild(tp);
       tp = tp.cloneNode(false);
     }
@@ -128,8 +127,7 @@ const jsGB = {
 
   run: function() {
     Z80._stop = 0;
-//    jsGB.run_interval = window.setInterval(jsGB.frame, 15);
-    jsGB.run_interval = window.setInterval(jsGB.frame, 1);
+    jsGB.run_interval = window.setInterval(jsGB.frame, 1000 / fps);
     jsGB.frameCounter = {start: Date.now(), frames: 0};
     jsGB.frame_interval = window.setInterval(function() {
       var now = Date.now();

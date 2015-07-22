@@ -1,86 +1,12 @@
 <html>
-  <head>
-    <title>GameBoy Emulator</title>
-    <link rel="stylesheet" type="text/css" media="all" href="css/screen.css" />
+	<head>
+		<title>GameBoy Emulator</title>
+		<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css" rel="stylesheet">
+		<link rel="stylesheet" type="text/css" media="all" href="css/screen.css" />
 	</head>
 	<body>
-		<div id="out">
-			<canvas id="screen" width="640" height="576">
-			</canvas>
-		</div>
-		<ul class="tablist" id="tablist_debug">
-			<li rel="tab_message">Messages</li>
-			<li rel="tab_registers">Debugger</li>
-			<li rel="tab_tile">Tile View</li>
-		</ul>
-		<div class="tab" id="tab_message">
-			<ul id="msg"></ul>
-		</div>
-		<div class="tab" id="tab_registers">
-			<table id="reg">
-				<tr>
-					<td class="regname">A</td><td class="reg" rel="a"></td>
-					<td class="regname">LCDC</td><td class="io" rel="40"></td>
-					<td class="regname">JOYP</td><td class="io" rel="00"></td>
-				</tr>
-				<tr>
-					<td class="regname">B</td><td class="reg" rel="b"></td>
-					<td class="regname">STAT</td><td class="io" rel="41"></td>
-				</tr>
-				<tr>
-					<td class="regname">C</td><td class="reg" rel="c"></td>
-					<td class="regname">SCY</td><td class="io" rel="42"></td>
-					<td class="regname">DIV</td><td class="io" rel="04"></td>
-				</tr>
-				<tr>
-					<td class="regname">D</td><td class=reg" rel="d"></td>
-					<td class="regname">SCX</td><td class="io" rel="43"></td>
-					<td class="regname">TIMA</td><td class="io" rel="05"></td>
-				</tr>
-				<tr>
-					<td class="regname">E</td><td class="reg" rel="e"></td>
-					<td class="regname">LY</td><td class="io" rel="44"></td>
-					<td class="regname">TMA</td><td class="io" rel="06"></td>
-				</tr>
-				<tr>
-					<td class="regname">HL</td><td class="reg" rel="hl"></td>
-					<td class="regname">LYC</td><td class="io" rel="45"></td>
-					<td class="regname">TCA</td><td class="io" rel="07"></td>
-				</tr>
-				<tr>
-					<td class="regname">PC</td><td class="reg" rel="pc"></td>
-					<td class="regname">IE</td><td class="io" rel="ff"></td>
-				</tr>
-				<tr>
-					<td class="regname">SP</td><td class="reg" rel="sp"></td>
-					<td class="regname">IF</td><td class="io" rel="0f"></td>
-				</tr>
-				<tr>
-					<td class="regname">F</td><td class="reg" rel="f"></td>
-				</tr>
-			</table>
-		</div>
-		<div class="tab" id="tab_tile">
-			<div id="tilectrl">
-				<input type="text" id="tilenum" value="0"><br>
-				<ul class="ops">
-					<li id="tileprev">Prev</li>
-					<li id="tilenext">Next</li>
-				</ul>
-			</div>
-			<div id="tilepixels"></div>
-		</div>
-		<div class="subcanv">
-			<ul class="ops">
-				<li id="op_reset">Reset</li>
-				<li id="op_run">Run</li>
-			</ul>
-			<p class="fps"><span id="fps">0</span> fps</p>
-		</div>
-		<p id="op_load">
-			Load <input type="text" id="file" value="/tests/tetris.gb">
-			Break at <input type="text" id="breakpoint">
-		</p>
+		<div id="reactboy"></div>
+		<script src="//cdnjs.cloudflare.com/ajax/libs/react/0.13.3/react-with-addons.js"></script>
 		<script type="text/javascript" src="js/gameboy-emulator.js"></script>
 	</body>
 </html>

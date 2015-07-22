@@ -1,12 +1,16 @@
 /**
  * GameBoy Emulator, main app
  */
-import KEY from './utils/emulator/key.js';
-import jsGB from './utils/jsGB.js';
+import Keypad from './utils/emulator/Keypad.js';
+import GameBoy from './components/GameBoy.jsx';
 
 document.addEventListener('DOMContentLoaded', function() {
-  jsGB.reset();
+  React.render(
+    <GameBoy />,
+    document.getElementById('reactboy')
+  );
 
-  window.onkeydown = KEY.keydown;
-  window.onkeyup = KEY.keyup;
+  // Bind keyboard to the GB keypad
+  window.onkeydown = Keypad.keydown;
+  window.onkeyup = Keypad.keyup;
 });

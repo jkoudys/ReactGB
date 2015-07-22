@@ -27,7 +27,7 @@ gulp.task('css', function() {
 // Load the ReactJS JSXes and build our app JS
 gulp.task('js', function() {
   return browserify({
-    entries: [path.JS + '/app.jsx'],
+    entries: [path.JS + '/shims.js', path.JS + '/app.jsx'],
     transform: [babelify],
     extensions: ['jsx']
   })

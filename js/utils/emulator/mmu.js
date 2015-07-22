@@ -1,6 +1,6 @@
 import LOG from './log.js';
 import GPU from './gpu.js';
-import KEY from './key.js';
+import Keypad from './Keypad.js';
 import Timer from './Timer.js';
 
 const MMU = {
@@ -151,7 +151,7 @@ const MMU = {
               case 0x00:
                 switch (addr & 0xF) {
                   case 0:
-                    return KEY.rb(); // JOYP
+                    return Keypad.rb(); // JOYP
                   case 4:
                   case 5:
                   case 6:
@@ -292,7 +292,7 @@ const MMU = {
               case 0x00:
                 switch (addr & 0xF) {
                   case 0:
-                    KEY.wb(val);
+                    Keypad.wb(val);
                     break;
                   case 4:
                   case 5:
