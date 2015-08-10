@@ -72,7 +72,7 @@ const Z80 = {
   // TODO: add speed modes for GBC support
   speed: 4190000,
 
-  reset: function() {
+  reset() {
     //CPU Registers and Flags:
     regAF[0] = 0x01B0;
     regBC[0] = 0x0013;
@@ -87,19 +87,19 @@ const Z80 = {
     LOG.out('Z80', 'Reset.');
   },
 
-  isInterruptable: function() {
+  isInterruptable() {
     return interruptsEnabled;
   },
 
-  isHalted: function() {
+  isHalted() {
     return Z80._halt;
   },
 
-  disableInterrupts: function() {
+  disableInterrupts() {
     interruptsEnabled = false;
   },
 
-  enabledInterrupts: function() {
+  enabledInterrupts() {
     interruptsEnabled = true;
   },
 
@@ -108,9 +108,33 @@ const Z80 = {
    * the counter to the next code.
    * @return int Clock ticks
    */
-  exec: function() {
+  exec() {
     return _map[MMU.rb(regPC[0]++)]();
   },
+
+  /**
+   * Get a nicely-formatted object with the registers state
+   * @return object
+   */
+  getRegisters() {
+    return {
+      a: regA[0],
+      b: regB[0],
+      c: regC[0],
+      d: regD[0],
+      e: regE[0],
+      f: regF[0],
+      hl: regHL[0],
+      sp: regSP[0],
+      pc: regPC[0],
+      flags: {
+        zero: !!(regF[0] & F_ZERO),
+        carry: !!(regF[0] & F_CARRY),
+        hcarry: !!(regF[0] & F_HCARRY),
+        subtract: !!(regF[0] & F_OP)
+      }
+    };
+  }
 };
 
 const _ops = {
@@ -546,15 +570,15 @@ const _ops = {
   },
 
   /**
-   * DAA - for dealing with Binary Coded Decimal
+   * DAA - for dealing with 
    * 0x27
    */
   DAA() {
     // Lookup from our table
-    var tempRegister = regA[0];
-    tempRegister |= (regF[0] & (F_CARRY | F_HCARRY | F_OP)) << 4;
+    var daaLookupIdx = regA[0];
+    daaLookupIdx |= (regF[0] & (F_CARRY | F_HCARRY | F_OP)) << 4;
 
-    regAF[0] = daaTable[regAF[0]];
+    regAF[0] = daaTable[daaLookupIdx];
     return 16;
   },
 
@@ -1368,7 +1392,7 @@ const _map = [
   _ops.JRZn, _ops.addHLReg.bind(null, regHL), _ops.LDAHLI, _ops.decReg16.bind(null, regHL),
   _ops.incReg.bind(null, regL), _ops.decReg.bind(null, regL), _ops.ldRegVal.bind(null, regL), _ops.CPL,
   // 30
-  _ops.JRNCn, _ops.ldReg16Val.bind(null, SP), _ops.LDHLDA, _ops.incReg16.bind(null, regSP),
+  _ops.JRNCn, _ops.ldReg16Val.bind(null, regSP), _ops.LDHLDA, _ops.incReg16.bind(null, regSP),
   _ops.INCHLm, _ops.DECHLm, _ops.LDHLmn, _ops.SCF,
   _ops.JRCn, _ops.addHLReg.bind(null, regSP), _ops.LDAHLD, _ops.decReg16.bind(null, regSP),
   _ops.incReg.bind(null, regA), _ops.decReg.bind(null, regA), _ops.ldRegVal.bind(null, regA), _ops.CCF,

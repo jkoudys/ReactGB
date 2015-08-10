@@ -41,7 +41,14 @@ const MMU = {
   _ie: 0,
   _if: 0,
 
-  reset: function() {
+  /**
+   * Getters
+   */
+  getRom() {
+    return MMU._rom;
+  },
+
+  reset() {
     MMU._wram = new Uint8Array(0x2000);
     MMU._eram = new Uint8Array(0x8000);
     MMU._zram = new Uint8Array(0x7f);
@@ -68,14 +75,14 @@ const MMU = {
    * Load a buffer as the ROM
    * @param ArrayBuffer buffer The ROM itself
    */
-  load: function(buffer) {
+  load(buffer) {
     MMU._rom = new Uint8Array(buffer);
     MMU._carttype = MMU._rom[0x0147];
 
     LOG.out('MMU', 'ROM loaded, ' + MMU._rom.length + ' bytes.');
   },
 
-  rb: function(addr) {
+  rb(addr) {
     switch (addr & 0xF000) {
       // ROM bank 0
       case 0x0000:

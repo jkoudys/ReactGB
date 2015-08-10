@@ -1,21 +1,19 @@
+import EmuStore from '../stores/EmuStore.js';
+
 class RomInfo extends React.Component {
   render() {
-    // ROM name: 0x0134
-    var name = 'TETRIS';
-    var size = 0xFFFF;
-    var filename = 'tetris.gb';
     return (
       <section id="rominfo">
-        <h3><i className="fa fa-table" /> {name}</h3>
+        <h3><i className="fa fa-table" /> {this.props.name}</h3>
         <dl>
           <dt>Filename</dt>
-          <dd>{filename}</dd>
+          <dd>{this.props.filename}</dd>
           <dt>Size</dt>
-          <dd>{size + ' bytes'}</dd>
+          <dd>{this.props.size + ' bytes'}</dd>
           <dt>Game Code</dt>
-          <dd>123</dd>
+          <dd>{this.props.code}</dd>
           <dt>Type</dt>
-          <dd>RUMBLE + SRAM</dd>
+          <dd>{this.props.type}</dd>
         </dl>
       </section>
     );
@@ -37,7 +35,7 @@ class SaveStates extends React.Component {
         <h3><i className="fa fa-database" /> Save Games</h3>
         <ul>
           {states.map(function(state) {
-            return <li><a className="loadstate">{fmt.format(state.time)}</a></li>;
+            return <li key={state.time}>><a className="loadstate">{fmt.format(state.time)}</a></li>;
           })}
           <li><a className="newstate">Save New State</a></li>
         </ul>
@@ -94,15 +92,36 @@ class MenuPanel extends React.Component {
     this.setState({open: true});
   }
 
+  componentWillMount() {
+    EmuStore.addChangeListener(this._onChange.bind(this));
+  }
+
+  componentWillUnmount() {
+    EmuStore.removeChangeListener(this._onChange);
+  }
+
+  _onChange() {
+    this.setState({});
+  }
+
   render() {
     var menuToggle;
     var back;
+    var romInfo;
+    var romProps = EmuStore.getRomInfo();
+
     if (!this.state.open) {
       menuToggle = <button key="menutoggle" className="menutoggle" onClick={this.handleOpen}><i className="fa fa-chevron-left" /> menu</button>;
     }
+
     if (this.state.submenu) {
       back = <button key="back" className="back"><i className="fa fa-chevron-left" /></button>
     }
+
+    if (romProps) {
+      romInfo = <RomInfo {...romProps} />;
+    }
+
     return (
       <aside className={'menupanel' + (this.state.open ? ' open' : '')}>
         <nav className="controls">
@@ -120,7 +139,7 @@ class MenuPanel extends React.Component {
               </ul>
             </nav>
           </section>
-          <RomInfo />
+          {romInfo}
           <SaveStates />
           <EmulatorLog />
         </section>

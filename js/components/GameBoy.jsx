@@ -5,9 +5,9 @@
 import MenuPanel from './MenuPanel.jsx';
 import RomLoader from './RomLoader.jsx';
 
-import GameStore from '../stores/GameStore.js';
+import EmuStore from '../stores/EmuStore.js';
 
-import GameActions from '../actions/GameActions.js';
+import EmuActions from '../actions/EmuActions.js';
 
 class GameBoy extends React.Component {
   constructor(props) {
@@ -15,11 +15,11 @@ class GameBoy extends React.Component {
   }
 
   componentWillMount() {
-    GameStore.addChangeListener(this._onChange.bind(this));
+    EmuStore.addChangeListener(this._onChange.bind(this));
   }
 
   componentWillUnmount() {
-    GameStore.removeChangeListener(this._onChange);
+    EmuStore.removeChangeListener(this._onChange);
   }
 
   _onChange() {
